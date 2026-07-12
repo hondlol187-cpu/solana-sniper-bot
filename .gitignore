@@ -10,6 +10,9 @@ node_modules
 !.yarn/releases
 !.yarn/versions
 
+# This repo uses bun.lock; do not commit npm lockfile drift.
+package-lock.json
+
 # testing
 /coverage
 

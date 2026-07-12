@@ -21,6 +21,9 @@ export const WRAPPED_SOL_MINT =
 export interface DecodedRaydiumCandidate {
   signal: RaydiumPoolSignal;
 
+  decoderVersion:
+    'raydium-amm-v4-initialize2-v1';
+
   poolAddress: string;
 
   baseMint: string;
@@ -28,6 +31,12 @@ export interface DecodedRaydiumCandidate {
 
   baseVault: string;
   quoteVault: string;
+
+  nonce: number;
+  openTime: number;
+
+  initialBaseAmountRaw: string;
+  initialQuoteAmountRaw: string;
 }
 
 export interface ValidatedRaydiumPool {
@@ -298,6 +307,55 @@ export async function validateDecodedRaydiumPool(
   connection: Connection,
   candidate: DecodedRaydiumCandidate
 ): Promise<ValidatedRaydiumPool> {
+  if (
+    candidate.decoderVersion !==
+    'raydium-amm-v4-initialize2-v1'
+  ) {
+    throw new Error(
+      'Unsupported Raydium decoder version'
+    );
+  }
+
+  if (
+    !Number.isInteger(candidate.nonce) ||
+    candidate.nonce < 0 ||
+    candidate.nonce > 255
+  ) {
+    throw new Error(
+      'Candidate has an invalid AMM nonce'
+    );
+  }
+
+  const initialBaseAmount = BigInt(
+    candidate.initialBaseAmountRaw
+  );
+
+  const initialQuoteAmount = BigInt(
+    candidate.initialQuoteAmountRaw
+  );
+
+  if (
+    initialBaseAmount <= 0n ||
+    initialQuoteAmount <= 0n
+  ) {
+    throw new Error(
+      'Initialize2 contains zero initial liquidity'
+    );
+  }
+
+  const currentTimestamp =
+    Math.floor(Date.now() / 1_000);
+
+  if (
+    candidate.openTime >
+    currentTimestamp +
+      config.maxPoolOpenDelaySeconds
+  ) {
+    throw new Error(
+      `Pool opens too far in the future: ${candidate.openTime}`
+    );
+  }
+
   const age =
     signalAgeSeconds(
       candidate.signal

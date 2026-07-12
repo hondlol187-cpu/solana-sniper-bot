@@ -382,6 +382,20 @@ export const config = {
     'REQUIRE_FINALIZED_POOL_TRANSACTION',
     true
   ),
+
+  maxPoolOpenDelaySeconds: numberEnv(
+    'MAX_POOL_OPEN_DELAY_SECONDS',
+    60,
+    0,
+    86_400
+  ),
+
+  maximumConcurrentPoolValidations: numberEnv(
+    'MAXIMUM_CONCURRENT_POOL_VALIDATIONS',
+    3,
+    1,
+    20
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);
