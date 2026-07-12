@@ -84,7 +84,9 @@ export function DetectedPools() {
                     transition={{ duration: 0.4 }}
                     className={`rounded-lg border p-3 ${
                       pool.isSafe
-                        ? 'border-emerald-500/30 bg-emerald-500/[0.04]'
+                        ? pool.source === 'live'
+                          ? 'border-cyan-500/40 bg-cyan-500/[0.06]'
+                          : 'border-emerald-500/30 bg-emerald-500/[0.04]'
                         : 'border-red-500/30 bg-red-500/[0.04]'
                     }`}
                   >
@@ -92,14 +94,25 @@ export function DetectedPools() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="truncate font-semibold">${pool.symbol}</span>
+                          {pool.source === 'live' && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-cyan-500/50 bg-cyan-500/15 px-1.5 py-0 text-[9px] font-bold uppercase tracking-wide text-cyan-400"
+                            >
+                              <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-cyan-400" />
+                              Live
+                            </Badge>
+                          )}
                           <span className="truncate font-mono text-[11px] text-muted-foreground">
                             {pool.mint}
                           </span>
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                          <span>Age {formatAge(pool.ageSec)}</span>
+                          {pool.source === 'sim' && <span>Age {formatAge(pool.ageSec)}</span>}
                           <span>LIQ {pool.liquiditySol.toFixed(1)} SOL</span>
-                          <span>MC ${Math.round(pool.marketCapUsd).toLocaleString()}</span>
+                          {pool.source === 'sim' && (
+                            <span>MC ${Math.round(pool.marketCapUsd).toLocaleString()}</span>
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-1">

@@ -25,6 +25,7 @@ import {
   Activity,
   ExternalLink,
   Play,
+  Radio,
   Settings,
   ShieldCheck,
   Square,
@@ -62,6 +63,32 @@ const STATUS_VARIANT: Record<
   },
 };
 
+function RealMonitorStatus() {
+  const realMonitor = useSniperStore((s) => s.realMonitor);
+  const useRealMonitor = useSniperStore((s) => s.settings.useRealMonitor);
+  if (!useRealMonitor) return null;
+  const lastEvent = realMonitor.lastEventAt
+    ? new Date(realMonitor.lastEventAt).toLocaleTimeString()
+    : '—';
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      <span className="flex items-center gap-1">
+        <span
+          className={`inline-block h-1.5 w-1.5 rounded-full ${
+            realMonitor.active ? 'animate-pulse bg-cyan-400' : 'bg-muted-foreground'
+          }`}
+        />
+        {realMonitor.active ? 'Connected' : 'Disconnected'}
+      </span>
+      <span>Detected: {realMonitor.detectedCount}</span>
+      <span>Last event: {lastEvent}</span>
+      {realMonitor.error && (
+        <span className="text-red-400">⚠ {realMonitor.error.slice(0, 40)}</span>
+      )}
+    </div>
+  );
+}
+
 export default function SniperDashboard() {
   const settings = useSniperStore((s) => s.settings);
   const isRunning = useSniperStore((s) => s.isRunning);
@@ -91,12 +118,25 @@ export default function SniperDashboard() {
     return () => clearInterval(id);
   }, [tick]);
 
-  // New-pool spawner (only meaningful while running)
+  // New-pool spawner (simulation, only meaningful while running)
   useEffect(() => {
     if (!isRunning) return;
     const id = setInterval(() => spawnPool(), 3500);
     return () => clearInterval(id);
   }, [isRunning, spawnPool]);
+
+  // Real RPC monitor lifecycle: start when running + enabled, stop otherwise
+  const startRealMonitor = useSniperStore((s) => s.startRealMonitor);
+  const stopRealMonitor = useSniperStore((s) => s.stopRealMonitor);
+  const useRealMonitor = useSniperStore((s) => s.settings.useRealMonitor);
+  useEffect(() => {
+    if (isRunning && useRealMonitor) {
+      startRealMonitor();
+      return () => stopRealMonitor();
+    }
+    // If monitor was running but isRunning/useRealMonitor flipped off, stop it
+    stopRealMonitor();
+  }, [isRunning, useRealMonitor, startRealMonitor, stopRealMonitor]);
 
   const handleSnipeNow = () => {
     if (!walletConnected) return;
@@ -251,6 +291,40 @@ export default function SniperDashboard() {
                       checked={settings.autoEnabled}
                       onCheckedChange={(checked) => updateSetting('autoEnabled', checked)}
                     />
+                  </div>
+
+                  {/* Live RPC monitor toggle + URL */}
+                  <div className="space-y-3 rounded-lg border border-cyan-500/30 bg-cyan-500/[0.06] p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="useRealMonitor" className="flex items-center gap-1.5 text-sm">
+                          <Radio className="h-3.5 w-3.5 text-cyan-400" />
+                          Live RPC Monitor
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          Subscribe to real Raydium onLogs + decode initialize2
+                        </p>
+                      </div>
+                      <Switch
+                        id="useRealMonitor"
+                        checked={settings.useRealMonitor}
+                        onCheckedChange={(checked) => updateSetting('useRealMonitor', checked)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rpcUrl" className="text-xs text-muted-foreground">
+                        RPC URL
+                      </Label>
+                      <Input
+                        id="rpcUrl"
+                        type="text"
+                        value={settings.rpcUrl}
+                        onChange={(e) => updateSetting('rpcUrl', e.target.value)}
+                        placeholder="https://api.mainnet-beta.solana.com"
+                        className="h-8 font-mono text-xs"
+                      />
+                    </div>
+                    <RealMonitorStatus />
                   </div>
                 </CardContent>
               </Card>

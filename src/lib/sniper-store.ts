@@ -1,4 +1,8 @@
 import { create } from 'zustand';
+import {
+  startRealTokenMonitor,
+  type SafeToken,
+} from '@/lib/real-monitor';
 
 /* ----------------------------------------------------------------------------
  * Types
@@ -10,6 +14,10 @@ export interface SniperSettings {
   targetMultiplier: number;
   minLiquiditySol: number;
   autoEnabled: boolean;
+  /** Solana RPC URL used by the live monitor (mainnet-beta by default). */
+  rpcUrl: string;
+  /** When true + running, subscribe to real Raydium onLogs for live pool detection. */
+  useRealMonitor: boolean;
 }
 
 export type ActivityStatus = 'success' | 'failed' | 'pending';
@@ -38,6 +46,8 @@ export interface DetectedPool {
   safetyReasons: string[];
   /** True if the token passed all anti-scam checks (mint auth, freeze auth, liquidity). */
   isSafe: boolean;
+  /** Origin of this detection: simulated by the engine or live from RPC. */
+  source: 'sim' | 'live';
 }
 
 export interface Position {
@@ -149,6 +159,7 @@ function makePool(settings: SniperSettings): DetectedPool {
     passedFilters,
     safetyReasons,
     isSafe,
+    source: 'sim' as const,
   };
 }
 
@@ -177,6 +188,14 @@ interface SniperState {
   walletAddress: string | null;
   /** Whether a Phantom (or compatible) injected provider was detected. */
   phantomAvailable: boolean;
+  /** Live RPC monitor status (null when never started). */
+  realMonitor: {
+    active: boolean;
+    rpcUrl: string;
+    lastEventAt: number | null;
+    detectedCount: number;
+    error: string | null;
+  };
 
   toggleTheme: () => void;
   setRunning: (r: boolean) => void;
@@ -193,6 +212,12 @@ interface SniperState {
   sellPosition: (id: string) => void;
   tick: () => void;
   spawnPool: () => void;
+  /** Push a real (live-RPC) SafeToken into the detected pools feed. */
+  addDetectedPool: (token: SafeToken) => void;
+  /** Start the live RPC monitor (Raydium onLogs + initialize2 decoding). */
+  startRealMonitor: () => void;
+  /** Stop the live RPC monitor. */
+  stopRealMonitor: () => void;
   clearActivity: () => void;
   resetAll: () => void;
 }
@@ -203,7 +228,12 @@ const initialSettings: SniperSettings = {
   targetMultiplier: 2.0,
   minLiquiditySol: 10,
   autoEnabled: false,
+  rpcUrl: 'https://api.mainnet-beta.solana.com',
+  useRealMonitor: false,
 };
+
+// Module-level ref holding the live monitor stop function (not reactive state).
+let _monitorStop: (() => void) | null = null;
 
 export const useSniperStore = create<SniperState>((set, get) => ({
   settings: initialSettings,
@@ -220,6 +250,13 @@ export const useSniperStore = create<SniperState>((set, get) => ({
   sparkData: SAMPLE_SPARK,
   walletAddress: null,
   phantomAvailable: false,
+  realMonitor: {
+    active: false,
+    rpcUrl: initialSettings.rpcUrl,
+    lastEventAt: null,
+    detectedCount: 0,
+    error: null,
+  },
 
   toggleTheme: () =>
     set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
@@ -593,6 +630,78 @@ export const useSniperStore = create<SniperState>((set, get) => ({
   },
 
   clearActivity: () => set({ activity: [] }),
+
+  addDetectedPool: (token) => {
+    // Convert a real (live-RPC) SafeToken into a DetectedPool and prepend.
+    const pool: DetectedPool = {
+      id: `live-${nextId()}`,
+      symbol: token.mint.slice(0, 6),
+      mint: token.mint.slice(0, 4) + '…' + token.mint.slice(-4),
+      liquiditySol: token.liquiditySol,
+      marketCapUsd: 0, // unknown until pool reserves fetched
+      ageSec: 0,
+      change5m: 0,
+      passedFilters: token.isSafe,
+      safetyReasons: token.reasons,
+      isSafe: token.isSafe,
+      source: 'live',
+    };
+    set((s) => ({ pools: [pool, ...s.pools].slice(0, 12) }));
+    get().addLog({
+      token: pool.symbol,
+      action: `🔴 LIVE: real new pool detected ${pool.symbol} (passed safety checks)`,
+      amount: '-',
+      status: 'success',
+    });
+    // Auto-snipe real safe tokens if auto mode is on
+    const { settings } = get();
+    if (settings.autoEnabled && token.isSafe) {
+      setTimeout(() => get().snipePool(pool.id), 400);
+    }
+  },
+
+  startRealMonitor: () => {
+    const { settings, realMonitor } = get();
+    if (realMonitor.active) return; // already running
+    if (_monitorStop) {
+      try { _monitorStop(); } catch { /* ignore */ }
+      _monitorStop = null;
+    }
+    _monitorStop = startRealTokenMonitor(
+      settings.rpcUrl,
+      settings.minLiquiditySol,
+      (token) => get().addDetectedPool(token),
+      (err) => {
+        set((s) => ({ realMonitor: { ...s.realMonitor, error: err } }));
+      },
+      (patch) => {
+        set((s) => ({ realMonitor: { ...s.realMonitor, ...patch } }));
+      }
+    );
+    get().addLog({
+      token: 'System',
+      action: `🔴 Live RPC monitor started (${settings.rpcUrl})`,
+      amount: '-',
+      status: 'success',
+    });
+  },
+
+  stopRealMonitor: () => {
+    const wasActive = get().realMonitor.active;
+    if (_monitorStop) {
+      try { _monitorStop(); } catch { /* ignore */ }
+      _monitorStop = null;
+    }
+    set((s) => ({ realMonitor: { ...s.realMonitor, active: false, error: null } }));
+    if (wasActive) {
+      get().addLog({
+        token: 'System',
+        action: 'Live RPC monitor stopped',
+        amount: '-',
+        status: 'success',
+      });
+    }
+  },
 
   resetAll: () =>
     set({
