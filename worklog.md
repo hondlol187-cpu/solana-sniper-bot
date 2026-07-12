@@ -939,3 +939,75 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 12
+Agent: main (Z.ai Code) — triggered by user code update (recovery-aware preflight fix)
+Task: Fix two bugs found in the operational-security batch (Task 11): preflight-before-
+       recovery ordering, and processed-slot lag-check unreliability. Add recovery-aware
+       preflight, finalized-slot lag checks, and RPC revalidation before signing.
+
+Work Log:
+- Read worklog (Tasks 1-11) to establish baseline: RPC cluster validation + startup
+  preflight + audit log. User found two bugs and provided precise fixes.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Bug 1 (preflight ordering): Preflight ran BEFORE loading saved position. A low-balance
+  wallet could refuse to start before recovering an open position (recovery needs less
+  SOL than new trades). Fix: load state first, select preflightMode (dry-run/recovery/
+  new-trade), then run preflight with the appropriate reserve requirement.
+- Bug 2 (processed slot): RPC health check used 'processed' slot for getBlockTime().
+  Very recent processed slots may not have block-time yet, causing healthy RPCs to be
+  rejected. Fix: use 'finalized' slot (reliably has block-time data).
+- Adopted all changes VERBATIM from user:
+  - sniper/preflight.ts: PreflightMode ('new-trade'|'recovery'|'dry-run'). runPreflight()
+    takes mode param; recovery uses recoveryMinimumFeeReserveLamports (500K, lower),
+    new-trade uses minimumFeeReserveLamports (10M), dry-run requires 0. Calls
+    ensureCurrentHealthy() first. Uses 'finalized' slot. Audits mode + requiredReserve.
+  - sniper/rpc.ts: validateRpc() uses 'finalized' slot. RpcEntry gains lastValidatedAt.
+    RpcPool gains currentEntry() + ensureCurrentHealthy() — skips recheck if validated
+    within rpcRecheckIntervalSeconds, otherwise rotates through all RPCs until one passes,
+    throws if none healthy. Audits rpc.revalidated/rpc.revalidation.failed. initialize()
+    sets lastValidatedAt on success.
+  - sniper/index.ts: loads state BEFORE preflight; selects preflightMode based on
+    liveTrading + existingState. Audits recovery.starting. Revalidates RPC + audits
+    buy.broadcast.preflight before buy simulateAndSend.
+  - sniper/position.ts: imports audit; revalidates RPC + audits exit.broadcast.preflight
+    before exit simulateAndSend.
+  - sniper/config.ts: recoveryMinimumFeeReserveLamports (500K, 50K-100M),
+    rpcRecheckIntervalSeconds (30, 5-600).
+  - .env.example: RECOVERY_MINIMUM_FEE_RESERVE_LAMPORTS, RPC_RECHECK_INTERVAL_SECONDS.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors. Dashboard fully intact.
+  - /api/quote still returns real Jupiter data.
+  - Lint: `bun run lint` clean (exit 0). (sniper/ is eslint-ignored — CLI code.)
+- Git: pushed as 7b4d07a (fast-forward 3355f63..7b4d07a). 7 files changed (significant
+  in preflight/rpc/index/position/config/env). No secrets staged. Token used via
+  one-time credential URL (not stored in git config).
+
+Stage Summary:
+- Two bugs fixed:
+  1. Recovery-aware preflight: existing positions can recover with a smaller emergency
+     reserve; new trades require the full reserve.
+  2. Finalized-slot lag checks: healthy RPCs no longer rejected due to missing block-time
+     on very recent processed slots.
+- New safety: RPC health revalidated before signing buy and exit transactions. A node
+  that becomes stale after startup is automatically bypassed (rotate on failure).
+
+Current project status:
+- Stable. The CLI bot (sniper/) is now comprehensively hardened for MANUAL trading with
+  crash recovery, RPC failover + cluster validation + lag detection (finalized slots),
+  process lock, partial-exit reconciliation, baseline protection, transaction-integrity
+  guards, recovery-aware startup preflight, RPC revalidation before signing, and a
+  persistent audit log. The dashboard reflects all trading params and simulates the exit
+  logic with real Jupiter quote enrichment. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- Automatic pool-triggered purchases still disabled. Raydium monitor needs proper
+  DEX-specific binary decoding + real vault-reserve calculations.
+- The dashboard still uses SIMULATED swaps. Wiring to real swap execution via /api/swap
+  route (returns unsigned tx for Phantom to sign) is the web next step.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
