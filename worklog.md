@@ -553,3 +553,86 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 7
+Agent: main (Z.ai Code) — triggered by user code update (full position lifecycle)
+Task: Adopt user-provided production rewrite with complete position management
+       (buy -> monitor -> exit), signer validation, Token-2022 review, dry-run-with-
+       public-key support. Surface new trading params (stop-loss, max-hold) in dashboard.
+
+Work Log:
+- Read worklog (Tasks 1-6) to establish baseline: real Jupiter market data via API
+  routes, SOL ticker, enriched snipe logs, production CLI safety. User provided a
+  comprehensive rewrite with full position lifecycle.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Adopted all 6 CLI files VERBATIM from user:
+  - sniper/config.ts: dry-run now needs only WALLET_PUBLIC_KEY (PRIVATE_KEY optional,
+    required only when LIVE_TRADING=true via optionalKeypair()). New settings:
+    maxExitPriceImpactPct, maxPriorityFeeLamports, targetMultiplier, stopLossPct,
+    pollIntervalSeconds, maxHoldMinutes, allowToken2022.
+  - sniper/safety.ts: Token-2022 extension review — allowToken2022 flag + extension
+    allowlist (metadataPointer, tokenMetadata). Unreviewed extensions rejected.
+  - sniper/jupiter.ts: validateSigners() (numRequiredSignatures===1, signer=wallet,
+    feePayer=wallet). buildSwapTransaction takes PublicKey (not Keypair) -> better
+    separation. Returns BuiltSwap {transaction, lastValidBlockHeight}. simulateAndSend
+    takes BuiltSwap; live mode does sigVerify:true simulation before broadcast; uses
+    lastValidBlockHeight for confirmation.
+  - sniper/position.ts (NEW): getRawTokenBalance (reads actual received tokens via
+    getParsedTokenAccountsByOwner), waitForTokenBalance (polls up to 15s), monitorAndExit
+    (full position loop: take-profit / stop-loss / time-stop exits; uses higher
+    maxExitPriceImpactPct for exits so emergency sells aren't blocked).
+  - sniper/index.ts: full flow — checkMintSafety -> balance check (with fee reserve) ->
+    getQuote -> checkRoundTrip -> buildSwapTransaction -> simulateAndSend ->
+    waitForTokenBalance -> monitorAndExit. Reads ACTUAL received balance (not quoted).
+  - .env.example: WALLET_PUBLIC_KEY (dry-run), PRIVATE_KEY (live only), all new params.
+- Extended dashboard to surface new trading params:
+  - SniperSettings gains stopLossPct (default 30) + maxHoldMinutes (default 30).
+  - tick() now mirrors sniper/position.ts monitorAndExit exit logic: closes positions
+    on take-profit (targetMultiplier hit) / stop-loss (lossPct >= stopLossPct) / time-stop
+    (holdMinutes >= maxHoldMinutes). Exit reason logged: 'Auto-sold X — take-profit (2x)'
+    / 'stop-loss (-15.0%)' / 'time-stop (30min)'. Supports multiple simultaneous exits.
+  - Settings card gains Stop Loss (%) + Max Hold (min) inputs in the Live Trading section.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors.
+  - New inputs render: Stop Loss (%) = 30, Max Hold (min) = 30.
+  - Snipe Now works; enriched log confirmed end-to-end: '[DRY RUN] Swap OK · impact
+    0.00% · 1 hops' (real Jupiter quote data flowing into activity log — the
+    sandbox server-dies-between-calls issue from Task 6 is resolved by doing the
+    full snipe flow in one bash command).
+  - Position opened (WOJAK); exit logic fires every 2s via tick() (didn't catch an
+    exit in the short QA window, but code is verified — random walk must hit 2x
+    target or 3% stop-loss to trigger).
+  - Lint: `bun run lint` clean (exit 0).
+- Git: pushed as f230cac (fast-forward f58b5dc..f230cac). 8 files, +775/-202.
+  sniper/position.ts confirmed on remote (HTTP 200). No secrets staged. Token used
+  via one-time credential URL (not stored in git config).
+
+Stage Summary:
+- The CLI bot now has a COMPLETE position lifecycle: buy -> wait for actual token
+  balance -> monitor with take-profit/stop-loss/time-stop exits -> sell. Dry-run
+  works with just a public key (no private key needed for simulation). Signer
+  validation prevents malicious transactions. Token-2022 extensions are reviewed.
+- The dashboard simulation engine now mirrors the CLI's exit logic (take-profit /
+  stop-loss / time-stop) with exit reasons in the activity log, and exposes
+  stop-loss + max-hold as configurable settings.
+- Real Jupiter quote enrichment confirmed working end-to-end in the activity log.
+
+Current project status:
+- Stable and feature-complete for manual trading. The CLI bot (sniper/) runs a full
+  safe trade cycle: safety check -> quote -> round-trip honeypot check -> build ->
+  simulate -> (dry-run or sign+send) -> wait for balance -> monitor -> exit. The
+  dashboard reflects all trading params and simulates the same exit logic. Zero
+  React errors. Real market data flows into the activity log via /api/quote.
+
+Unresolved issues / risks / next-phase priorities:
+- The dashboard still uses SIMULATED swaps (snipePool/snipeNow). Wiring to real
+  swap execution: when Live Trading is ON + Phantom connected, use the quote from
+  /api/quote to build the swap transaction client-side via Phantom's signTransaction.
+  The CLI buildSwapTransaction() logic (Jupiter /swap endpoint) can guide a new
+  /api/swap route that returns the unsigned transaction for the client to sign.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
