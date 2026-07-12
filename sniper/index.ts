@@ -31,6 +31,13 @@ import {
 import { RpcPool } from './rpc.js';
 import { checkMintSafety } from './safety.js';
 import { acquireProcessLock } from './lock.js';
+import {
+  runPreflight,
+} from './preflight.js';
+
+import {
+  audit,
+} from './audit.js';
 
 async function recoverPendingBuy(
   rpcPool: RpcPool,
@@ -119,6 +126,13 @@ async function recoverExistingState(
 
 async function main(): Promise<void> {
   const rpcPool = new RpcPool();
+
+  await rpcPool.initialize();
+
+  await runPreflight(
+    rpcPool,
+    config.walletPublicKey
+  );
 
   /*
    * Recovery always happens before allowing
@@ -229,6 +243,22 @@ async function main(): Promise<void> {
    */
   await saveState(pendingState);
 
+  await audit(
+    'buy.pending',
+    {
+      wallet:
+        config.walletPublicKey.toBase58(),
+      mint:
+        outputMint.toBase58(),
+      inputLamports:
+        buyLamports.toString(),
+      balanceBeforeRaw:
+        balanceBefore.toString(),
+      liveTrading:
+        config.liveTrading,
+    }
+  );
+
   const builtSwap =
     await buildSwapTransaction(
       buyQuote,
@@ -264,6 +294,18 @@ async function main(): Promise<void> {
       balanceBefore
     );
 
+  await audit(
+    'buy.confirmed',
+    {
+      signature:
+        buySignature,
+      mint:
+        outputMint.toBase58(),
+      purchasedAmountRaw:
+        purchasedAmount.toString(),
+    }
+  );
+
   const now = new Date().toISOString();
 
   const openPosition: OpenPositionState = {
@@ -294,6 +336,16 @@ async function main(): Promise<void> {
 
   console.log(
     `Exit result: ${exitSignature}`
+  );
+
+  await audit(
+    'exit.completed',
+    {
+      signature:
+        exitSignature,
+      mint:
+        outputMint.toBase58(),
+    }
   );
 }
 
@@ -368,6 +420,14 @@ run().catch((error: unknown) => {
 
   console.error(
     'Position state was preserved. Do not start another purchase before checking it.'
+  );
+
+  void audit(
+    'bot.fatal',
+    {
+      message,
+      statePreserved: true,
+    }
   );
 
   process.exitCode = 1;

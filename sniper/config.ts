@@ -53,6 +53,24 @@ function optionalKeypair(): Keypair | null {
   }
 }
 
+function enumEnv<T extends string>(
+  name: string,
+  fallback: T,
+  allowed: readonly T[]
+): T {
+  const raw =
+    process.env[name]?.trim() ||
+    fallback;
+
+  if (!allowed.includes(raw as T)) {
+    throw new Error(
+      `${name} must be one of: ${allowed.join(', ')}`
+    );
+  }
+
+  return raw as T;
+}
+
 const liveTrading = booleanEnv('LIVE_TRADING', false);
 const keypair = optionalKeypair();
 
@@ -296,6 +314,41 @@ export const config = {
     100_000,
     50_000_000
   ),
+
+  expectedCluster: enumEnv(
+    'EXPECTED_CLUSTER',
+    'mainnet-beta',
+    [
+      'mainnet-beta',
+      'devnet',
+      'testnet',
+    ] as const
+  ),
+
+  maxRpcLagSeconds: numberEnv(
+    'MAX_RPC_LAG_SECONDS',
+    60,
+    5,
+    600
+  ),
+
+  rpcHealthTimeoutMs: numberEnv(
+    'RPC_HEALTH_TIMEOUT_MS',
+    10_000,
+    1_000,
+    60_000
+  ),
+
+  minimumFeeReserveLamports: numberEnv(
+    'MINIMUM_FEE_RESERVE_LAMPORTS',
+    10_000_000,
+    1_000_000,
+    1_000_000_000
+  ),
+
+  auditFile:
+    process.env.AUDIT_FILE?.trim() ||
+    './sniper-audit.jsonl',
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

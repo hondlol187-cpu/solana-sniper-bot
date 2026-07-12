@@ -71,3 +71,4 @@ server.log
 sniper-position.json
 sniper-position.json.tmp
 sniper-bot.lock
+sniper-audit.jsonl
