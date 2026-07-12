@@ -1,6 +1,7 @@
 import {
   Connection,
   Keypair,
+  PublicKey,
   VersionedTransaction,
 } from '@solana/web3.js';
 
@@ -22,12 +23,19 @@ export interface JupiterQuote {
   [key: string]: unknown;
 }
 
-async function readJson<T>(response: Response): Promise<T> {
+export interface BuiltSwap {
+  transaction: VersionedTransaction;
+  lastValidBlockHeight?: number;
+}
+
+async function readJson<T>(
+  response: Response
+): Promise<T> {
   const text = await response.text();
 
   if (!response.ok) {
     throw new Error(
-      `Jupiter returned HTTP ${response.status}: ${text.slice(0, 500)}`
+      `Jupiter HTTP ${response.status}: ${text.slice(0, 500)}`
     );
   }
 
@@ -41,7 +49,8 @@ async function readJson<T>(response: Response): Promise<T> {
 export async function getQuote(
   inputMint: string,
   outputMint: string,
-  rawAmount: bigint
+  rawAmount: bigint,
+  maxPriceImpactPct = config.maxPriceImpactPct
 ): Promise<JupiterQuote> {
   const params = new URLSearchParams({
     inputMint,
@@ -53,7 +62,7 @@ export async function getQuote(
   });
 
   const response = await fetch(
-    `${config.jupiterApiUrl}/quote?${params.toString()}`,
+    `${config.jupiterApiUrl}/quote?${params}`,
     {
       headers: {
         Accept: 'application/json',
@@ -64,113 +73,160 @@ export async function getQuote(
 
   const quote = await readJson<JupiterQuote>(response);
 
-  if (quote.inputMint !== inputMint) {
-    throw new Error('Quote contains an unexpected input mint');
-  }
-
-  if (quote.outputMint !== outputMint) {
-    throw new Error('Quote contains an unexpected output mint');
+  if (
+    quote.inputMint !== inputMint ||
+    quote.outputMint !== outputMint
+  ) {
+    throw new Error(
+      'Quote contains unexpected mint addresses'
+    );
   }
 
   if (quote.inAmount !== rawAmount.toString()) {
-    throw new Error('Quote contains an unexpected input amount');
+    throw new Error(
+      'Quote contains an unexpected input amount'
+    );
   }
-
-  if (!quote.routePlan?.length) {
-    throw new Error('Jupiter did not return a swap route');
-  }
-
-  if (BigInt(quote.outAmount) <= 0n) {
-    throw new Error('Quote output amount is zero');
-  }
-
-  const priceImpactPct = Number(quote.priceImpactPct);
 
   if (
-    !Number.isFinite(priceImpactPct) ||
-    priceImpactPct > config.maxPriceImpactPct
+    !Array.isArray(quote.routePlan) ||
+    quote.routePlan.length === 0
+  ) {
+    throw new Error('Jupiter returned no route');
+  }
+
+  if (
+    BigInt(quote.outAmount) <= 0n ||
+    BigInt(quote.otherAmountThreshold) <= 0n
   ) {
     throw new Error(
-      `Price impact ${priceImpactPct}% exceeds limit ` +
-        `${config.maxPriceImpactPct}%`
+      'Jupiter returned an invalid output amount'
+    );
+  }
+
+  const priceImpact = Number(quote.priceImpactPct);
+
+  if (
+    !Number.isFinite(priceImpact) ||
+    priceImpact < 0 ||
+    priceImpact > maxPriceImpactPct
+  ) {
+    throw new Error(
+      `Price impact ${priceImpact}% exceeds ${maxPriceImpactPct}%`
     );
   }
 
   return quote;
 }
 
-/**
- * Checks whether Jupiter can quote the token back to SOL.
- * This is useful, but it is not a guarantee that a token is safe.
- */
 export async function checkRoundTrip(
   buyQuote: JupiterQuote
-): Promise<{
-  sellQuote: JupiterQuote;
-  estimatedLossPct: number;
-}> {
-  const sellQuote = await getQuote(
+): Promise<number> {
+  const reverseQuote = await getQuote(
     buyQuote.outputMint,
     SOL_MINT,
     BigInt(buyQuote.outAmount)
   );
 
   const originalInput = Number(buyQuote.inAmount);
-  const returnedAmount = Number(sellQuote.outAmount);
+  const returnedAmount = Number(reverseQuote.outAmount);
 
   if (
-    !Number.isFinite(originalInput) ||
-    !Number.isFinite(returnedAmount) ||
+    !Number.isSafeInteger(originalInput) ||
+    !Number.isSafeInteger(returnedAmount) ||
     originalInput <= 0
   ) {
-    throw new Error('Invalid round-trip quote amounts');
-  }
-
-  const estimatedLossPct =
-    ((originalInput - returnedAmount) / originalInput) * 100;
-
-  if (estimatedLossPct > config.maxRoundTripLossPct) {
     throw new Error(
-      `Estimated round-trip loss ${estimatedLossPct.toFixed(2)}% ` +
-        `exceeds limit ${config.maxRoundTripLossPct}%`
+      'Unsafe numeric range in round-trip quote'
     );
   }
 
-  return {
-    sellQuote,
-    estimatedLossPct,
-  };
+  const estimatedLossPct =
+    ((originalInput - returnedAmount) /
+      originalInput) *
+    100;
+
+  if (
+    estimatedLossPct >
+    config.maxRoundTripLossPct
+  ) {
+    throw new Error(
+      `Estimated round-trip loss ${estimatedLossPct.toFixed(
+        2
+      )}% exceeds ${config.maxRoundTripLossPct}%`
+    );
+  }
+
+  return estimatedLossPct;
+}
+
+function validateSigners(
+  transaction: VersionedTransaction,
+  wallet: PublicKey
+): void {
+  const requiredSignatures =
+    transaction.message.header.numRequiredSignatures;
+
+  const signerKeys =
+    transaction.message.staticAccountKeys.slice(
+      0,
+      requiredSignatures
+    );
+
+  if (
+    requiredSignatures !== 1 ||
+    signerKeys.length !== 1 ||
+    !signerKeys[0]?.equals(wallet)
+  ) {
+    throw new Error(
+      'Transaction requests unexpected signers'
+    );
+  }
+
+  const feePayer =
+    transaction.message.staticAccountKeys[0];
+
+  if (!feePayer?.equals(wallet)) {
+    throw new Error(
+      'Wallet is not the transaction fee payer'
+    );
+  }
 }
 
 export async function buildSwapTransaction(
   quote: JupiterQuote,
-  wallet: Keypair
-): Promise<VersionedTransaction> {
-  const response = await fetch(`${config.jupiterApiUrl}/swap`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({
-      quoteResponse: quote,
-      userPublicKey: wallet.publicKey.toBase58(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      dynamicSlippage: false,
-      prioritizationFeeLamports: {
-        priorityLevelWithMaxLamports: {
-          priorityLevel: 'high',
-          maxLamports: 500_000,
-        },
+  wallet: PublicKey
+): Promise<BuiltSwap> {
+  const response = await fetch(
+    `${config.jupiterApiUrl}/swap`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
-    }),
-  });
+      signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({
+        quoteResponse: quote,
+        userPublicKey: wallet.toBase58(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        dynamicSlippage: false,
+        prioritizationFeeLamports: {
+          priorityLevelWithMaxLamports: {
+            priorityLevel: 'high',
+            maxLamports:
+              config.maxPriorityFeeLamports,
+          },
+        },
+      }),
+    }
+  );
 
   const body = await readJson<{
     swapTransaction?: string;
     simulationError?: unknown;
+    lastValidBlockHeight?: number;
   }>(response);
 
   if (body.simulationError) {
@@ -182,65 +238,120 @@ export async function buildSwapTransaction(
   }
 
   if (!body.swapTransaction) {
-    throw new Error('Jupiter did not return a swap transaction');
+    throw new Error(
+      'Jupiter did not return a swap transaction'
+    );
   }
 
-  const transaction = VersionedTransaction.deserialize(
-    Buffer.from(body.swapTransaction, 'base64')
-  );
+  const transaction =
+    VersionedTransaction.deserialize(
+      Buffer.from(body.swapTransaction, 'base64')
+    );
 
-  const feePayer = transaction.message.staticAccountKeys[0];
+  validateSigners(transaction, wallet);
 
-  if (!feePayer?.equals(wallet.publicKey)) {
-    throw new Error('Wallet is not the expected transaction fee payer');
-  }
-
-  return transaction;
+  return {
+    transaction,
+    lastValidBlockHeight:
+      body.lastValidBlockHeight,
+  };
 }
 
 export async function simulateAndSend(
   connection: Connection,
-  wallet: Keypair,
-  transaction: VersionedTransaction
+  signer: Keypair | null,
+  builtSwap: BuiltSwap
 ): Promise<string> {
-  const simulation = await connection.simulateTransaction(transaction, {
-    sigVerify: false,
-    replaceRecentBlockhash: true,
-    commitment: 'processed',
-  });
+  const {
+    transaction,
+    lastValidBlockHeight,
+  } = builtSwap;
+
+  if (!config.liveTrading) {
+    const simulation =
+      await connection.simulateTransaction(
+        transaction,
+        {
+          sigVerify: false,
+          replaceRecentBlockhash: true,
+          commitment: 'processed',
+        }
+      );
+
+    if (simulation.value.err) {
+      throw new Error(
+        `Dry-run simulation failed: ${JSON.stringify(
+          simulation.value.err
+        )}`
+      );
+    }
+
+    console.log(
+      'DRY RUN: transaction simulation succeeded'
+    );
+
+    if (simulation.value.logs) {
+      console.log(
+        simulation.value.logs.join('\n')
+      );
+    }
+
+    return 'DRY_RUN';
+  }
+
+  if (!signer) {
+    throw new Error(
+      'Live trading requires a signer'
+    );
+  }
+
+  transaction.sign([signer]);
+
+  /*
+   * Simulate the exact signed transaction that will
+   * be broadcast.
+   */
+  const simulation =
+    await connection.simulateTransaction(
+      transaction,
+      {
+        sigVerify: true,
+        commitment: 'processed',
+      }
+    );
 
   if (simulation.value.err) {
     throw new Error(
-      `Local transaction simulation failed: ${JSON.stringify(
+      `Signed simulation failed: ${JSON.stringify(
         simulation.value.err
       )}`
     );
   }
 
-  if (!config.liveTrading) {
-    console.log('DRY RUN: transaction simulated successfully');
-    console.log(
-      simulation.value.logs?.join('\n') ?? 'No simulation logs'
+  const signature =
+    await connection.sendRawTransaction(
+      transaction.serialize(),
+      {
+        skipPreflight: false,
+        maxRetries: 3,
+        preflightCommitment: 'confirmed',
+      }
     );
 
-    return 'DRY_RUN';
-  }
-
-  transaction.sign([wallet]);
-
-  const signature = await connection.sendRawTransaction(
-    transaction.serialize(),
-    {
-      skipPreflight: false,
-      maxRetries: 3,
-      preflightCommitment: 'confirmed',
-    }
-  );
-
-  const confirmation = await connection.confirmTransaction(
-    signature,
-    'confirmed'
-  );
+  const confirmation = lastValidBlockHeight
+    ? await connection.confirmTransaction(
+        {
+          signature,
+          blockhash:
+            transaction.message.recentBlockhash,
+          lastValidBlockHeight,
+        },
+        'confirmed'
+      )
+    : await connection.confirmTransaction(
+        signature,
+        'confirmed'
+      );
 
   if (confirmation.value.err) {
     throw new Error(

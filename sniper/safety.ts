@@ -4,6 +4,8 @@ import {
   PublicKey,
 } from '@solana/web3.js';
 
+import { config } from './config.js';
+
 export interface TokenSafetyResult {
   safe: boolean;
   reasons: string[];
@@ -47,31 +49,84 @@ export async function checkMintSafety(
 
   const data = account.value.data as ParsedAccountData;
 
-  if (data.program !== 'spl-token' && data.program !== 'spl-token-2022') {
-    reasons.push(`Unexpected mint program: ${data.program}`);
+  if (
+    data.program !== 'spl-token' &&
+    data.program !== 'spl-token-2022'
+  ) {
+    reasons.push(
+      `Unexpected mint program: ${data.program}`
+    );
+  }
+
+  if (
+    data.program === 'spl-token-2022' &&
+    !config.allowToken2022
+  ) {
+    reasons.push(
+      'Token-2022 is disabled because extensions require additional review'
+    );
   }
 
   const info = data.parsed?.info;
 
   if (!info) {
     reasons.push('Missing parsed mint information');
-  } else {
-    if (info.mintAuthority !== null) {
-      reasons.push('Mint authority is still active');
-    }
 
-    if (info.freezeAuthority !== null) {
-      reasons.push('Freeze authority is still active');
-    }
+    return {
+      safe: false,
+      reasons,
+    };
+  }
 
-    if (info.isInitialized !== true) {
-      reasons.push('Mint is not initialized');
-    }
+  if (info.mintAuthority !== null) {
+    reasons.push('Mint authority is active');
+  }
 
-    const decimals = Number(info.decimals);
+  if (info.freezeAuthority !== null) {
+    reasons.push('Freeze authority is active');
+  }
 
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) {
-      reasons.push(`Suspicious decimals value: ${info.decimals}`);
+  if (info.isInitialized !== true) {
+    reasons.push('Mint is not initialized');
+  }
+
+  const decimals = Number(info.decimals);
+
+  if (
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 12
+  ) {
+    reasons.push(
+      `Suspicious decimals value: ${info.decimals}`
+    );
+  }
+
+  /*
+   * Conservatively inspect Token-2022 extensions if support
+   * was explicitly enabled.
+   */
+  const extensions = Array.isArray(info.extensions)
+    ? info.extensions
+    : [];
+
+  const allowedExtensions = new Set([
+    'metadataPointer',
+    'tokenMetadata',
+  ]);
+
+  for (const extension of extensions) {
+    const type = String(
+      extension?.extension ??
+        extension?.extensionType ??
+        extension?.type ??
+        'unknown'
+    );
+
+    if (!allowedExtensions.has(type)) {
+      reasons.push(
+        `Unreviewed Token-2022 extension: ${type}`
+      );
     }
   }
 

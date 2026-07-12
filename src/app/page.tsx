@@ -376,6 +376,38 @@ export default function SniperDashboard() {
                         className="h-8"
                       />
                     </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="stopLossPct" className="text-xs text-muted-foreground">
+                          Stop Loss (%)
+                        </Label>
+                        <Input
+                          id="stopLossPct"
+                          type="number"
+                          value={settings.stopLossPct}
+                          onChange={(e) =>
+                            updateSetting('stopLossPct', parseFloat(e.target.value) || 0)
+                          }
+                          step="1"
+                          className="h-8"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="maxHoldMinutes" className="text-xs text-muted-foreground">
+                          Max Hold (min)
+                        </Label>
+                        <Input
+                          id="maxHoldMinutes"
+                          type="number"
+                          value={settings.maxHoldMinutes}
+                          onChange={(e) =>
+                            updateSetting('maxHoldMinutes', parseFloat(e.target.value) || 0)
+                          }
+                          step="1"
+                          className="h-8"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

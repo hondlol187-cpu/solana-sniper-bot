@@ -22,6 +22,10 @@ export interface SniperSettings {
   liveTrading: boolean;
   /** Max allowed price impact % (mirrors CLI MAX_PRICE_IMPACT_PCT). */
   maxPriceImpactPct: number;
+  /** Stop-loss % — auto-sell when position drops this much (mirrors CLI STOP_LOSS_PCT). */
+  stopLossPct: number;
+  /** Max hold time in minutes — auto-sell after this (mirrors CLI MAX_HOLD_MINUTES). */
+  maxHoldMinutes: number;
 }
 
 export type ActivityStatus = 'success' | 'failed' | 'pending';
@@ -242,6 +246,8 @@ const initialSettings: SniperSettings = {
   useRealMonitor: false,
   liveTrading: false,
   maxPriceImpactPct: 3,
+  stopLossPct: 30,
+  maxHoldMinutes: 30,
 };
 
 // Module-level ref holding the live monitor stop function (not reactive state).
@@ -604,18 +610,38 @@ export const useSniperStore = create<SniperState>((set, get) => ({
       }));
       return;
     }
-    // random-walk each position; auto-close at target
+    // random-walk each position; auto-close on take-profit / stop-loss / time-stop
+    // (mirrors sniper/position.ts monitorAndExit exit logic)
     const updated: Position[] = [];
     let realizedDelta = 0;
-    let newlyClosed: { pos: Position; pnl: number } | null = null;
+    const closedLogs: Omit<ActivityLog, 'id' | 'time'>[] = [];
+    let winsDelta = 0;
     for (const p of positions) {
       const drift = rand(-0.04, 0.07); // slight positive bias
       const next = Math.max(0.0001, p.currentSol * (1 + drift));
       const mult = next / p.entrySol;
-      if (mult >= p.targetMultiplier) {
-        // auto take-profit
-        newlyClosed = { pos: { ...p, currentSol: next }, pnl: next - p.entrySol };
-        realizedDelta += next - p.entrySol;
+      const lossPct = (1 - mult) * 100;
+      const holdMinutes = (Date.now() - p.openedAt) / 60_000;
+      const takeProfit = mult >= p.targetMultiplier;
+      const stopLoss = lossPct >= settings.stopLossPct;
+      const timeStop = holdMinutes >= settings.maxHoldMinutes;
+      if (takeProfit || stopLoss || timeStop) {
+        const reason = takeProfit
+          ? `take-profit (${p.targetMultiplier}x)`
+          : stopLoss
+            ? `stop-loss (-${lossPct.toFixed(1)}%)`
+            : `time-stop (${holdMinutes.toFixed(0)}min)`;
+        const pnl = next - p.entrySol;
+        realizedDelta += pnl;
+        if (pnl >= 0) winsDelta += 1;
+        closedLogs.push({
+          token: p.symbol,
+          action: `Auto-sold ${p.symbol} — ${reason}`,
+          amount: `${next.toFixed(4)} SOL`,
+          status: 'success' as ActivityStatus,
+          tx: makeTx(),
+          pnlSol: pnl,
+        });
       } else {
         updated.push({ ...p, currentSol: next });
       }
@@ -626,23 +652,14 @@ export const useSniperStore = create<SniperState>((set, get) => ({
     set((s) => ({
       positions: updated,
       realizedPnlSol: newRealized,
-      winsToday: newlyClosed ? s.winsToday + 1 : s.winsToday,
+      winsToday: s.winsToday + winsDelta,
       pnlHistory: [
         ...s.pnlHistory.slice(-59),
         { t: Date.now(), pnl: newRealized + unrealized, equity },
       ],
-      activity: newlyClosed
+      activity: closedLogs.length
         ? [
-            {
-              id: nextId(),
-              time: now(),
-              token: newlyClosed.pos.symbol,
-              action: `Auto-sold ${newlyClosed.pos.symbol} — target hit (${newlyClosed.pos.targetMultiplier}x)`,
-              amount: `${newlyClosed.pos.currentSol.toFixed(4)} SOL`,
-              status: 'success' as ActivityStatus,
-              tx: makeTx(),
-              pnlSol: newlyClosed.pnl,
-            },
+            ...closedLogs.map((l) => ({ ...l, id: nextId(), time: now() })),
             ...s.activity,
           ].slice(0, 50)
         : s.activity,

@@ -1,4 +1,8 @@
-import { Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import {
+  Connection,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+} from '@solana/web3.js';
 
 import { config } from './config.js';
 import {
@@ -8,93 +12,157 @@ import {
   simulateAndSend,
   SOL_MINT,
 } from './jupiter.js';
+
+import {
+  monitorAndExit,
+  waitForTokenBalance,
+} from './position.js';
+
 import { checkMintSafety } from './safety.js';
 
 async function main(): Promise<void> {
-  const connection = new Connection(config.rpcUrl, {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 30_000,
-  });
+  const connection = new Connection(
+    config.rpcUrl,
+    {
+      commitment: 'confirmed',
+      confirmTransactionInitialTimeout:
+        30_000,
+    }
+  );
 
-  console.log(`Checking token ${config.outputMint}...`);
+  const outputMint = new PublicKey(
+    config.outputMint
+  );
+
+  console.log(
+    `Checking ${outputMint.toBase58()}...`
+  );
 
   const safety = await checkMintSafety(
     connection,
-    config.outputMint
+    outputMint.toBase58()
   );
 
   if (!safety.safe) {
     throw new Error(
-      `Token rejected:\n- ${safety.reasons.join('\n- ')}`
+      `Token rejected:\n- ${safety.reasons.join(
+        '\n- '
+      )}`
     );
   }
 
-  console.log('Mint authority checks passed');
+  console.log(
+    'Token passed preliminary safety checks'
+  );
 
   const buyLamports = BigInt(
-    Math.floor(config.buyAmountSol * LAMPORTS_PER_SOL)
+    Math.floor(
+      config.buyAmountSol *
+        LAMPORTS_PER_SOL
+    )
   );
 
-  const balance = await connection.getBalance(
-    config.keypair.publicKey,
-    'confirmed'
-  );
+  const balance =
+    await connection.getBalance(
+      config.walletPublicKey,
+      'confirmed'
+    );
 
-  const requiredBalance =
-    Number(buyLamports) + 1_000_000; // Reserve for fees.
+  const feeReserve =
+    config.maxPriorityFeeLamports +
+    1_000_000;
 
-  if (balance < requiredBalance) {
+  if (
+    balance <
+    Number(buyLamports) + feeReserve
+  ) {
     throw new Error(
-      `Insufficient wallet balance. Have ${
+      `Insufficient SOL balance: ${
         balance / LAMPORTS_PER_SOL
-      } SOL`
+      }`
     );
   }
-
-  console.log('Requesting buy quote...');
 
   const buyQuote = await getQuote(
     SOL_MINT,
-    config.outputMint,
+    outputMint.toBase58(),
     buyLamports
   );
 
-  console.log(`Expected raw token output: ${buyQuote.outAmount}`);
-  console.log(`Price impact: ${buyQuote.priceImpactPct}%`);
-
-  console.log('Checking whether token can be quoted back to SOL...');
-
-  const roundTrip = await checkRoundTrip(buyQuote);
+  console.log(
+    `Expected raw output: ${buyQuote.outAmount}`
+  );
 
   console.log(
-    `Estimated round-trip loss: ` +
-      `${roundTrip.estimatedLossPct.toFixed(2)}%`
+    `Entry price impact: ${buyQuote.priceImpactPct}%`
   );
 
-  const transaction = await buildSwapTransaction(
-    buyQuote,
-    config.keypair
+  const roundTripLoss =
+    await checkRoundTrip(buyQuote);
+
+  console.log(
+    `Estimated round-trip loss: ${roundTripLoss.toFixed(
+      2
+    )}%`
   );
 
-  const signature = await simulateAndSend(
-    connection,
-    config.keypair,
-    transaction
-  );
+  const builtSwap =
+    await buildSwapTransaction(
+      buyQuote,
+      config.walletPublicKey
+    );
+
+  const signature =
+    await simulateAndSend(
+      connection,
+      config.keypair,
+      builtSwap
+    );
 
   if (signature === 'DRY_RUN') {
     console.log(
-      'Dry run completed. Set LIVE_TRADING=true only after reviewing everything.'
+      'Dry run completed; nothing was signed or broadcast.'
     );
-  } else {
-    console.log(`Swap confirmed: ${signature}`);
-    console.log(`https://solscan.io/tx/${signature}`);
+
+    return;
   }
+
+  console.log(
+    `Buy confirmed: https://solscan.io/tx/${signature}`
+  );
+
+  /*
+   * Read the actual received balance instead of assuming
+   * that Jupiter's quoted output was received.
+   */
+  const actualTokenAmount =
+    await waitForTokenBalance(
+      connection,
+      config.walletPublicKey,
+      outputMint
+    );
+
+  console.log(
+    `Actual raw token balance: ${actualTokenAmount}`
+  );
+
+  const exitSignature =
+    await monitorAndExit(
+      connection,
+      outputMint,
+      buyLamports
+    );
+
+  console.log(
+    `Exit confirmed: https://solscan.io/tx/${exitSignature}`
+  );
 }
 
 main().catch((error: unknown) => {
   const message =
-    error instanceof Error ? error.message : String(error);
+    error instanceof Error
+      ? error.message
+      : String(error);
 
   console.error(`Fatal error: ${message}`);
   process.exitCode = 1;
