@@ -26,6 +26,7 @@ import {
   ExternalLink,
   Play,
   Settings,
+  ShieldCheck,
   Square,
   Trash2,
   Wallet,
@@ -66,15 +67,23 @@ export default function SniperDashboard() {
   const isRunning = useSniperStore((s) => s.isRunning);
   const activity = useSniperStore((s) => s.activity);
   const walletConnected = useSniperStore((s) => s.walletConnected);
+  const walletAddress = useSniperStore((s) => s.walletAddress);
+  const phantomAvailable = useSniperStore((s) => s.phantomAvailable);
   const theme = useSniperStore((s) => s.theme);
 
   const setRunning = useSniperStore((s) => s.setRunning);
   const connectWallet = useSniperStore((s) => s.connectWallet);
+  const initWallet = useSniperStore((s) => s.initWallet);
   const updateSetting = useSniperStore((s) => s.updateSetting);
   const snipeNow = useSniperStore((s) => s.snipeNow);
   const tick = useSniperStore((s) => s.tick);
   const spawnPool = useSniperStore((s) => s.spawnPool);
   const clearActivity = useSniperStore((s) => s.clearActivity);
+
+  // Detect Phantom injected provider on mount
+  useEffect(() => {
+    initWallet();
+  }, [initWallet]);
 
   // Price-tick + PnL update interval (always on, cheap)
   useEffect(() => {
@@ -114,7 +123,7 @@ export default function SniperDashboard() {
                 Solana Sniper
               </h1>
               <p className="text-sm text-muted-foreground">
-                Full Auto Sniper Dashboard
+                Auto Sniper with Scam Protection
               </p>
             </div>
           </div>
@@ -131,7 +140,11 @@ export default function SniperDashboard() {
               }
             >
               <Wallet className="mr-2 h-4 w-4" />
-              {walletConnected ? 'Connected' : 'Connect Wallet'}
+              {walletConnected
+                ? walletAddress || 'Connected'
+                : phantomAvailable
+                  ? 'Connect Phantom'
+                  : 'Connect Wallet'}
             </Button>
 
             <Badge
@@ -223,13 +236,14 @@ export default function SniperDashboard() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-500/[0.06] p-3">
                     <div className="space-y-0.5">
-                      <Label htmlFor="autoEnabled" className="text-sm">
-                        Auto Mode
+                      <Label htmlFor="autoEnabled" className="flex items-center gap-1.5 text-sm">
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                        Auto Mode + Scam Filter
                       </Label>
                       <p className="text-xs text-muted-foreground">
-                        Auto-snipe tokens passing filters
+                        Auto-snipe tokens that pass mint/freeze/liquidity checks
                       </p>
                     </div>
                     <Switch

@@ -34,6 +34,10 @@ export interface DetectedPool {
   ageSec: number;
   change5m: number;
   passedFilters: boolean;
+  /** Anti-scam safety reasons (empty = safe). Mirrors sniper/monitor.ts checkTokenSafety. */
+  safetyReasons: string[];
+  /** True if the token passed all anti-scam checks (mint auth, freeze auth, liquidity). */
+  isSafe: boolean;
 }
 
 export interface Position {
@@ -119,8 +123,21 @@ function randomMint(): string {
 function makePool(settings: SniperSettings): DetectedPool {
   const liquiditySol = rand(1, 80);
   const change5m = rand(-60, 180);
-  const passedFilters =
-    liquiditySol >= settings.minLiquiditySol && change5m > -20;
+
+  // Simulate the anti-scam checks from sniper/monitor.ts checkTokenSafety:
+  //   - mint authority active (can mint more tokens -> inflation rug)
+  //   - freeze authority active (can freeze holders -> rug)
+  //   - liquidity too low (below minLiquiditySol)
+  const safetyReasons: string[] = [];
+  if (Math.random() < 0.28) safetyReasons.push('Mint authority active');
+  if (Math.random() < 0.22) safetyReasons.push('Freeze authority active');
+  if (liquiditySol < settings.minLiquiditySol)
+    safetyReasons.push(`Liquidity too low (< ${settings.minLiquiditySol} SOL)`);
+
+  const isSafe = safetyReasons.length === 0;
+  // passedFilters = safe AND meets the user's liquidity + momentum thresholds
+  const passedFilters = isSafe && change5m > -20;
+
   return {
     id: `pool-${nextId()}`,
     symbol: pick(MEME_SYMBOLS),
@@ -130,6 +147,8 @@ function makePool(settings: SniperSettings): DetectedPool {
     ageSec: randInt(2, 90),
     change5m,
     passedFilters,
+    safetyReasons,
+    isSafe,
   };
 }
 
@@ -154,11 +173,18 @@ interface SniperState {
   snipesToday: number;
   winsToday: number;
   sparkData: number[];
+  /** Connected wallet pubkey (truncated) or null. */
+  walletAddress: string | null;
+  /** Whether a Phantom (or compatible) injected provider was detected. */
+  phantomAvailable: boolean;
 
   toggleTheme: () => void;
   setRunning: (r: boolean) => void;
-  connectWallet: () => void;
+  /** Connect via real Phantom injected provider if available; else simulated. */
+  connectWallet: () => Promise<void>;
   disconnectWallet: () => void;
+  /** Detect injected window.solana (Phantom) on mount. */
+  initWallet: () => void;
   updateSetting: <K extends keyof SniperSettings>(k: K, v: SniperSettings[K]) => void;
   applyPreset: (preset: PresetKey) => void;
   addLog: (log: Omit<ActivityLog, 'id' | 'time'>) => void;
@@ -192,6 +218,8 @@ export const useSniperStore = create<SniperState>((set, get) => ({
   snipesToday: 0,
   winsToday: 0,
   sparkData: SAMPLE_SPARK,
+  walletAddress: null,
+  phantomAvailable: false,
 
   toggleTheme: () =>
     set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
@@ -206,18 +234,95 @@ export const useSniperStore = create<SniperState>((set, get) => ({
     });
   },
 
-  connectWallet: () => {
-    set((s) => ({ walletConnected: !s.walletConnected }));
+  initWallet: () => {
+    if (typeof window === 'undefined') return;
+    const sol = (window as any).solana;
+    if (sol?.isPhantom) {
+      set({ phantomAvailable: true });
+      // Auto-reconnect if already connected from a prior session
+      if (sol.isConnected && sol.publicKey) {
+        set({
+          walletConnected: true,
+          walletAddress: sol.publicKey.toBase58().slice(0, 4) + '…' + sol.publicKey.toBase58().slice(-4),
+        });
+      }
+      // Listen for disconnect events from the provider
+      sol.on?.('disconnect', () => {
+        set({ walletConnected: false, walletAddress: null });
+      });
+    }
+  },
+
+  connectWallet: async () => {
+    const { walletConnected, phantomAvailable } = get();
+    // If already connected -> disconnect
+    if (walletConnected) {
+      const sol = (window as any).solana;
+      try {
+        await sol?.disconnect?.();
+      } catch {
+        /* ignore */
+      }
+      set({ walletConnected: false, walletAddress: null });
+      get().addLog({
+        token: 'System',
+        action: 'Wallet disconnected',
+        amount: '-',
+        status: 'success',
+      });
+      return;
+    }
+    // Real Phantom path
+    if (phantomAvailable) {
+      const sol = (window as any).solana;
+      try {
+        const resp = await sol.connect();
+        const pk = resp.publicKey.toBase58();
+        set({
+          walletConnected: true,
+          walletAddress: pk.slice(0, 4) + '…' + pk.slice(-4),
+        });
+        get().addLog({
+          token: 'System',
+          action: `Phantom wallet connected (${pk.slice(0, 6)}…)`,
+          amount: '-',
+          status: 'success',
+        });
+        return;
+      } catch (err: any) {
+        get().addLog({
+          token: 'System',
+          action: `Phantom connect rejected: ${err?.message || 'cancelled'}`,
+          amount: '-',
+          status: 'failed',
+        });
+        return;
+      }
+    }
+    // Fallback: simulated connection (dev/demo when no Phantom installed)
+    await new Promise((r) => setTimeout(r, 350));
+    const fakePk =
+      'Demo' +
+      Math.random().toString(36).slice(2, 6).toUpperCase() +
+      '…' +
+      Math.random().toString(36).slice(2, 4).toUpperCase();
+    set({ walletConnected: true, walletAddress: fakePk });
     get().addLog({
       token: 'System',
-      action: !get().walletConnected ? 'Wallet disconnected' : 'Wallet connected',
+      action: 'Simulated wallet connected (no Phantom detected)',
       amount: '-',
       status: 'success',
     });
   },
 
   disconnectWallet: () => {
-    set({ walletConnected: false });
+    const sol = (typeof window !== 'undefined' ? (window as any).solana : null);
+    try {
+      sol?.disconnect?.();
+    } catch {
+      /* ignore */
+    }
+    set({ walletConnected: false, walletAddress: null });
     get().addLog({
       token: 'System',
       action: 'Wallet disconnected',
@@ -455,13 +560,32 @@ export const useSniperStore = create<SniperState>((set, get) => ({
     if (!isRunning) return;
     const pool = makePool(settings);
     set((s) => ({ pools: [pool, ...s.pools].slice(0, 12) }));
-    // auto-snipe if enabled and passes filters
+
+    // Log unsafe detections (mirrors sniper/monitor.ts "🚫 Filtered unsafe token")
+    if (!pool.isSafe) {
+      get().addLog({
+        token: pool.symbol,
+        action: `Filtered unsafe ${pool.symbol} — ${pool.safetyReasons.join('; ')}`,
+        amount: '-',
+        status: 'failed',
+      });
+      return;
+    }
+
+    // Safe token — auto-snipe if enabled (with some probability), else log as skipped
     if (settings.autoEnabled && pool.passedFilters && Math.random() > 0.35) {
       setTimeout(() => get().snipePool(pool.id), 600);
     } else if (settings.autoEnabled && pool.passedFilters) {
       get().addLog({
         token: pool.symbol,
-        action: `Detected ${pool.symbol} — skipped (filter margin)`,
+        action: `Safe token detected ${pool.symbol} — skipped (filter margin)`,
+        amount: '-',
+        status: 'pending',
+      });
+    } else {
+      get().addLog({
+        token: pool.symbol,
+        action: `Safe token detected ${pool.symbol} — awaiting manual snipe`,
         amount: '-',
         status: 'pending',
       });

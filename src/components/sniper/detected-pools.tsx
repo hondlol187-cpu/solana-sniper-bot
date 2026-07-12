@@ -3,7 +3,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Radio, Zap } from 'lucide-react';
+import { Radio, ShieldCheck, ShieldAlert, Zap } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useSniperStore } from '@/lib/sniper-store';
 
@@ -18,31 +18,46 @@ export function DetectedPools() {
   const walletConnected = useSniperStore((s) => s.walletConnected);
   const snipePool = useSniperStore((s) => s.snipePool);
 
+  const safeCount = pools.filter((p) => p.isSafe).length;
+
   return (
     <Card className="flex flex-col">
       <CardHeader>
         <CardTitle className="flex items-center justify-between">
           <span className="flex items-center gap-2">
             <Radio className="h-5 w-5 text-muted-foreground" />
-            Detected Pools
+            Detected Safe Tokens
           </span>
-          <Badge
-            variant="outline"
-            className={
-              isRunning
-                ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-400'
-                : 'border-border bg-muted text-muted-foreground'
-            }
-          >
-            <span
-              className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${
-                isRunning ? 'animate-pulse bg-cyan-400' : 'bg-muted-foreground'
-              }`}
-            />
-            {isRunning ? 'LIVE' : 'IDLE'}
-          </Badge>
+          <div className="flex items-center gap-2">
+            {pools.length > 0 && (
+              <Badge
+                variant="outline"
+                className="border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+              >
+                <ShieldCheck className="mr-1 h-3 w-3" />
+                {safeCount} safe
+              </Badge>
+            )}
+            <Badge
+              variant="outline"
+              className={
+                isRunning
+                  ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-400'
+                  : 'border-border bg-muted text-muted-foreground'
+              }
+            >
+              <span
+                className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${
+                  isRunning ? 'animate-pulse bg-cyan-400' : 'bg-muted-foreground'
+                }`}
+              />
+              {isRunning ? 'LIVE' : 'IDLE'}
+            </Badge>
+          </div>
         </CardTitle>
-        <CardDescription>New liquidity pools streaming from the monitor</CardDescription>
+        <CardDescription>
+          Only tokens that passed anti-scam filters (mint/freeze authority, liquidity) appear as safe
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex-1">
         {pools.length === 0 ? (
@@ -67,7 +82,11 @@ export function DetectedPools() {
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 16 }}
                     transition={{ duration: 0.4 }}
-                    className="rounded-lg border border-border/70 bg-muted/30 p-3"
+                    className={`rounded-lg border p-3 ${
+                      pool.isSafe
+                        ? 'border-emerald-500/30 bg-emerald-500/[0.04]'
+                        : 'border-red-500/30 bg-red-500/[0.04]'
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
@@ -95,22 +114,46 @@ export function DetectedPools() {
                           {up ? '+' : ''}
                           {pool.change5m.toFixed(1)}%
                         </Badge>
-                        {!pool.passedFilters && (
-                          <span className="text-[10px] uppercase text-amber-500/80">filtered</span>
-                        )}
                       </div>
                     </div>
-                    <div className="mt-2 flex justify-end">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!walletConnected}
-                        onClick={() => snipePool(pool.id)}
-                        className="h-7 gap-1 px-2 text-xs"
-                      >
-                        <Zap className="h-3 w-3" /> Snipe
-                      </Button>
+
+                    {/* Safety row */}
+                    <div className="mt-2 flex items-center gap-2">
+                      {pool.isSafe ? (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                        >
+                          <ShieldCheck className="h-3 w-3" /> Safe
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-red-500/40 bg-red-500/10 text-red-400"
+                        >
+                          <ShieldAlert className="h-3 w-3" /> Unsafe
+                        </Badge>
+                      )}
+                      {pool.safetyReasons.length > 0 && (
+                        <span className="truncate text-[10px] text-red-400/80">
+                          {pool.safetyReasons.join(' · ')}
+                        </span>
+                      )}
                     </div>
+
+                    {pool.isSafe && (
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!walletConnected}
+                          onClick={() => snipePool(pool.id)}
+                          className="h-7 gap-1 px-2 text-xs"
+                        >
+                          <Zap className="h-3 w-3" /> Snipe
+                        </Button>
+                      </div>
+                    )}
                   </motion.div>
                 );
               })}
