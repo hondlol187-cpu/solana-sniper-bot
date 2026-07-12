@@ -1081,3 +1081,85 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 14
+Agent: main (Z.ai Code) — triggered by user code update (quarantine unsafe pool monitor)
+Task: Replace the unsafe monitor (which guessed account indexes, assumed parsed.type,
+       used pool-account lamports as liquidity, and could trigger purchases from
+       incorrectly decoded addresses) with a safe signal-only architecture + separate
+       validator.
+
+Work Log:
+- Read worklog (Tasks 1-13) to establish baseline: type-safe CLI + dashboard with tsc
+  + lint both passing. User identified the monitor as still unsafe.
+- QA baseline: GET 200, tsc exit 0, lint exit 0, zero React errors.
+- Adopted all changes VERBATIM from user:
+  - sniper/monitor.ts: REWRITTEN as signal-only. RaydiumPoolSignal {signature, slot,
+    programId, detectedAt, validated: false}. startRaydiumSignalMonitor() subscribes
+    to onLogs, reports signatures that appear related to initialization (initialize2
+    or initialize), de-duplicates (10K cap), audits pool.signal.detected. Does NOT
+    guess account indexes, mint addresses, vault addresses, or liquidity. Uses
+    removeOnLogsListener (proper async API).
+  - sniper/pool-validator.ts (NEW): validateDecodedRaydiumPool() — takes a
+    DecodedRaydiumCandidate (from a future proper Raydium decoder), validates:
+    signal freshness (maxPoolSignalAgeSeconds), signal programId, distinct accounts,
+    WSOL-quoted only, finalized transaction (requireFinalizedPoolTransaction),
+    transaction contains all required accounts + has top-level Raydium instruction,
+    pool account exists + owned by Raydium AMM v4 + not executable, base/quote vaults
+    are valid token accounts with matching mints + non-zero amounts + same owner,
+    base mint passes checkMintSafety, real vault liquidity >=
+    minimumValidatedLiquiditySol. Returns ValidatedRaydiumPool {validated: true}.
+  - sniper/candidate-gate.ts (NEW): acceptPoolForTrading() — final guard before
+    trading. Verifies pool.validated === true + liquiditySol > 0. Audits
+    pool.accepted.for-trading.
+  - src/lib/real-monitor.ts: REWRITTEN as browser-compatible signal-only adapter
+    (startRaydiumSignalMonitor). Removed SafeToken, checkTokenSafety,
+    startRealTokenMonitor, ParsedInstruction cast — all the unsafe decoding. Exports
+    RaydiumPoolSignal + RealMonitorStatus only.
+  - src/lib/sniper-store.ts: addDetectedPool now takes RaydiumPoolSignal (not
+    SafeToken). Signals appear as 'SIGNAL — not validated' with isSafe:false,
+    safetyReasons:['Signal — not yet decoded or validated'], no Snipe button,
+    NO auto-snipe. CRITICAL: signals are never auto-sniped — they must be decoded
+    + validated + accepted first. startRealMonitor calls startRaydiumSignalMonitor.
+  - sniper/config.ts: minimumValidatedLiquiditySol (10, 0.1-100K),
+    maxPoolSignalAgeSeconds (30, 1-600), requireFinalizedPoolTransaction (true).
+  - .env.example: MINIMUM_VALIDATED_LIQUIDITY_SOL, MAX_POOL_SIGNAL_AGE_SECONDS,
+    REQUIRE_FINALIZED_POOL_TRANSACTION.
+- Verified:
+  - npx tsc --noEmit → exit 0 ✅
+  - bun run lint → exit 0 ✅
+  - GET 200, zero React console errors, dashboard fully intact ✅
+  - /api/quote returns real Jupiter data ✅
+- Git: pushed as eb1fe9c (fast-forward 4265f2b..eb1fe9c). 7 files, +872/-223.
+  sniper/pool-validator.ts + sniper/candidate-gate.ts confirmed on remote (HTTP 200).
+  No secrets staged. Token used via one-time credential URL.
+
+Stage Summary:
+- The unsafe monitor is quarantined. The new safe boundary is:
+  log signal → proper DEX decoder → on-chain account validation → finalized
+  transaction → real vault liquidity → trading candidate.
+- Signals are NEVER auto-sniped. They must be decoded by a proper Raydium decoder,
+  passed to validateDecodedRaydiumPool(), then acceptPoolForTrading() before any
+  purchase. Automatic purchases remain disabled until a proper Raydium SDK or
+  tested binary decoder supplies DecodedRaydiumCandidate.
+- The dashboard's simulated pool feed (makePool/spawnPool) is separate and clearly
+  labeled as simulation.
+
+Current project status:
+- Stable and type-safe. The CLI bot has a safe signal-only monitor + a rigorous
+  pool validator + a candidate gate. The dashboard's live RPC toggle now produces
+  signals (not fake "safe tokens") that are clearly labeled as needing validation.
+  tsc + lint both pass. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- Automatic pool-triggered purchases still disabled. A proper Raydium SDK or tested
+  binary decoder is needed to supply DecodedRaydiumCandidate to
+  validateDecodedRaydiumPool(). This is the gating item for auto-buy.
+- The dashboard still uses SIMULATED swaps. Wiring to real swap execution via /api/swap
+  route (returns unsigned tx for Phantom to sign) is the web next step.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
