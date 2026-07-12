@@ -82,7 +82,7 @@ export interface Preset {
   key: PresetKey;
   label: string;
   description: string;
-  settings: Omit<SniperSettings, 'autoEnabled'>;
+  settings: Partial<Omit<SniperSettings, 'autoEnabled'>>;
 }
 
 /* ----------------------------------------------------------------------------
@@ -807,6 +807,7 @@ export function selectKpis(s: SniperState) {
     realized: s.realizedPnlSol,
     unrealized,
     successRate,
+    winsToday: s.winsToday,
     activePositions: s.positions.length,
     snipesToday: s.snipesToday,
     poolsWatched: s.pools.length,

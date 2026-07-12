@@ -27,8 +27,8 @@ export async function checkTokenSafety(
     if (data?.parsed?.info?.freezeAuthority) reasons.push('Freeze authority still active');
 
     const poolInfo = await connection.getAccountInfo(poolAddress);
-    if (poolInfo && poolInfo.lamports < config.minLiquiditySol * LAMPORTS_PER_SOL) {
-      reasons.push(`Liquidity below minimum (${config.minLiquiditySol} SOL)`);
+    if (poolInfo && poolInfo.lamports < 10 * LAMPORTS_PER_SOL) {
+      reasons.push(`Liquidity below minimum (10 SOL)`);
     }
 
     return { isSafe: reasons.length === 0, reasons };
@@ -105,5 +105,5 @@ export function startRealTokenMonitor(
     'confirmed'
   );
 
-  return () => connection.removeOnLogs(subscriptionId);
+  return () => (connection as any).removeOnLogs(subscriptionId);
 }

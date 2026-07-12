@@ -165,7 +165,7 @@ export function startRealTokenMonitor(
     stopped = true;
     if (subscriptionId != null) {
       try {
-        connection.removeOnLogs(subscriptionId);
+        (connection as any).removeOnLogs(subscriptionId);
       } catch {
         /* ignore */
       }

@@ -116,7 +116,7 @@ export async function runPreflight(
 
   await audit(
     'preflight.passed',
-    preflight
+    { ...preflight }
   );
 
   console.log(
