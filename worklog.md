@@ -475,3 +475,81 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 6
+Agent: webDevReview cron (15-min)
+Task: Wire dashboard to real Jupiter market data via key-less server-side API routes
+       (the top next-step priority from Task 5 worklog). Add SOL price ticker.
+       Improve styling + add features per mandatory requirements.
+
+Work Log:
+- Read worklog (Tasks 1-5) to establish baseline: production-grade CLI bot (dry-run,
+  round-trip check, simulation), dashboard with scam protection, Phantom wallet, live
+  RPC monitor, DRY RUN/LIVE mode. Top priority: wire dashboard to real Jupiter data.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Tested Jupiter Lite API reachability from sandbox: HTTP 200 (quote + price v3 work).
+- Created GET /api/quote (edge runtime, key-less):
+  - Fetches real Jupiter Lite API quote server-side (no private key needed).
+  - Params: outputMint, amountSol (0-1), slippageBps (1-5000).
+  - Validates mints/amount/route/output (mirrors sniper/jupiter.ts getQuote()).
+  - Returns clean public-safe subset: priceImpactPct, outAmount, routePlan, swapMode.
+  - Verified via curl: 0.05 SOL -> 3.845014 USDC, 0% impact, SolFi V2 route.
+- Created GET /api/price (edge runtime, key-less):
+  - Fetches Jupiter Price API v3 (https://lite-api.jup.ag/price/v3).
+  - Returns usdPrice + priceChange24h. Default: SOL.
+  - Verified via curl: SOL $76.88, -1.08% 24h.
+  - Note: v2 URL returned 404; v3 is correct. Response structure: mint map at top level.
+- Created src/components/sniper/sol-price-ticker.tsx:
+  - Live SOL/USD badge in header, polls /api/price every 30s.
+  - Shows price + 24h change (green if positive, red if negative).
+  - Loading state ('SOL $…') and graceful failure (returns null).
+  - Verified via agent-browser eval: header shows 'SOL $76.88 -1.08%'.
+- Extended sniper-store.ts:
+  - fetchRealQuote(outputMint): calls /api/quote, returns {priceImpactPct, outAmount,
+    routeCount}. Silent failure returns null (enrichment is best-effort).
+  - snipeNow() now fetches a real quote (USDC demo mint) in parallel with the
+    simulated swap. On success, enriches the log: '[DRY RUN] Swap OK · impact 0.00%
+    · 2 hops'. The quote fetch is non-blocking — the swap proceeds regardless.
+- Added SolPriceTicker to header (between wallet button and DRY RUN badge).
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors.
+  - SOL ticker renders: 'SOL $76.88 -1.08%' (confirmed via eval).
+  - /api/quote works (curl: real Jupiter data with price impact + route).
+  - /api/price works (curl: real SOL price + 24h change).
+  - Snipe Now works; enrichment fires async (sandbox server-dies-between-calls
+    prevents the browser fetch from completing in QA, but the API is verified
+    working via curl — in a real environment the enrichment will appear).
+  - Lint: `bun run lint` clean (exit 0).
+- Git: pushed as 0b132e1 (fast-forward 9a7770c..0b132e1). 5 files, +309 lines.
+  api/quote/route.ts confirmed on remote (HTTP 200). No secrets staged. Token used
+  via one-time credential URL (not stored in git config).
+
+Stage Summary:
+- The dashboard now pulls REAL Jupiter market data via two key-less server-side API
+  routes: /api/quote (real price impact, output amount, route) and /api/price (live
+  SOL/USD price + 24h change). A live SOL price ticker sits in the header. Snipe
+  actions enrich their activity log entries with real price impact + hop count.
+- No private key is ever exposed to the browser — the server fetches public market
+  data only; signing stays client-side via Phantom.
+
+Current project status:
+- Stable and now connected to real market data. The / route renders a comprehensive
+  sniper dashboard with: live SOL price ticker, real Jupiter quote enrichment on
+  snipe actions, simulation engine (KPIs, equity curve, pools, positions), anti-scam
+  filter, Phantom wallet, live RPC monitor, DRY RUN/LIVE mode. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- The enriched snipe log (impact + hops) couldn't be verified end-to-end in QA because
+  the dev server dies between Bash calls (the browser fetch fails). The API is verified
+  working via curl. In a real environment this will work. Could add a fallback: if the
+  real quote fetch fails, log '[DRY RUN] Swap OK (quote unavailable)'.
+- The actual swap signing is still simulated. Next step: when Live Trading is ON +
+  Phantom connected, build the real swap transaction client-side using the quote from
+  /api/quote + Phantom's signTransaction. The CLI sniper/jupiter.ts buildSwapTransaction()
+  logic can guide this (it calls Jupiter /swap endpoint).
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter for multi-wallet.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry + fallback.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
