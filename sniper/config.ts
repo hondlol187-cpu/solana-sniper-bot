@@ -396,6 +396,17 @@ export const config = {
     1,
     20
   ),
+
+  candidateStoreFile:
+    process.env.CANDIDATE_STORE_FILE?.trim() ||
+    './sniper-candidates.json',
+
+  maximumCandidateRecords: numberEnv(
+    'MAXIMUM_CANDIDATE_RECORDS',
+    1_000,
+    10,
+    100_000
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

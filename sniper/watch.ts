@@ -9,6 +9,11 @@ import {
   processRaydiumSignal,
 } from './pool-pipeline.js';
 
+import {
+  hasCandidate,
+  queueValidatedPool,
+} from './candidate-store.js';
+
 import { audit } from './audit.js';
 
 async function main(): Promise<void> {
@@ -42,6 +47,22 @@ async function main(): Promise<void> {
         }
 
         const task = (async () => {
+          if (
+            await hasCandidate(
+              signal.signature
+            )
+          ) {
+            await audit(
+              'pool.signal.duplicate',
+              {
+                signature:
+                  signal.signature,
+              }
+            );
+
+            return;
+          }
+
           const pool =
             await processRaydiumSignal(
               rpcPool.current(),
@@ -50,12 +71,17 @@ async function main(): Promise<void> {
 
           if (!pool) return;
 
+          const record =
+            await queueValidatedPool(pool);
+
           console.log(
             [
-              'VALIDATED POOL',
-              `Mint: ${pool.baseMint}`,
-              `Pool: ${pool.poolAddress}`,
-              `Liquidity: ${pool.liquiditySol} SOL`,
+              'VALIDATED POOL QUEUED',
+              `Status: ${record.status}`,
+              `Signature: ${record.signature}`,
+              `Mint: ${record.baseMint}`,
+              `Pool: ${record.poolAddress}`,
+              `Liquidity: ${record.pool.liquiditySol} SOL`,
             ].join(' | ')
           );
 

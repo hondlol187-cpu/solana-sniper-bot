@@ -1268,3 +1268,108 @@ Stage Summary:
 - The PAT the user provided is now exposed in chat history. User should
   revoke it from https://github.com/settings/tokens after confirming
   the push, then generate a fresh one for next time.
+
+---
+Task ID: 16
+Agent: main (Z.ai Code)
+Task: Add persistent candidate store + dedup across restarts + manual approval
+      with exact mint confirmation + historical-tx replay testing.
+      Still no automatic execution after approval.
+
+Work Log:
+- Synced to origin/main (HEAD = fa9923f). Confirmed Task ID 15 decoder +
+  pipeline + watch mode are live.
+- Added config.candidateStoreFile (default ./sniper-candidates.json) and
+  config.maximumCandidateRecords (default 1000, range 10..100_000) to
+  sniper/config.ts. Wired to CANDIDATE_STORE_FILE and
+  MAXIMUM_CANDIDATE_RECORDS env vars.
+- Created sniper/candidate-store.ts implementing:
+    * CandidateRecord type (signature, poolAddress, baseMint, status,
+      pool, firstSeenAt, updatedAt, optional approval/rejection sub-records)
+    * CandidateStatus = 'pending' | 'approved' | 'rejected'
+    * Atomic file storage via write-temp-then-rename (.tmp suffix)
+    * In-process serialization via Promise queue (no concurrent overwrites)
+    * validateStore() rejects malformed stores on load
+    * trimStore() retains approved candidates first, then newest remaining
+    * hasCandidate(signature) - dedup check
+    * queueValidatedPool(pool) - idempotent on signature OR poolAddress
+    * approveCandidate(signature, confirmedMint) - throws if mint mismatch,
+      throws if candidate is rejected
+    * rejectCandidate(signature, reason) - throws if approved, requires reason
+    * listCandidates(status?) - newest-first sort
+    * clearCandidateStore() - idempotent (ENOENT-safe)
+    * All state transitions audited (candidate.queued / .approved / .rejected)
+- Updated sniper/watch.ts to:
+    * Check hasCandidate(signal.signature) before processing - duplicates
+      are audited as pool.signal.duplicate and skipped
+    * Call queueValidatedPool(pool) after validation succeeds
+    * New console format: VALIDATED POOL QUEUED | Status | Signature |
+      Mint | Pool | Liquidity
+- Created sniper/candidates.ts CLI:
+    * npm run sniper:candidates -- list [pending|approved|rejected]
+    * npm run sniper:candidates -- approve <signature> <exact-mint>
+    * npm run sniper:candidates -- reject <signature> <reason...>
+    * Approve REQUIRES exact-mint confirmation (case-sensitive string match
+      against candidate.baseMint). No SOL is spent. No trade is executed.
+- Created sniper/replay.ts CLI:
+    * npm run sniper:replay -- <transaction-signature>
+    * Fetches historical tx via RpcPool, reconstructs a RaydiumPoolSignal,
+      runs it through processRaydiumSignal() (decode -> validate -> gate),
+      and queues the result via queueValidatedPool(). Lets you replay real
+      mainnet Initialize2 transactions to validate the decoder end-to-end
+      against known-good data.
+- Added sniper:candidates and sniper:replay scripts to package.json
+  (existing scripts preserved).
+- Added CANDIDATE_STORE_FILE=./sniper-candidates.json and
+  MAXIMUM_CANDIDATE_RECORDS=1000 to .env.example.
+- Added sniper-candidates.json and sniper-candidates.json.tmp to .gitignore.
+
+Verification:
+- rm -f .tsbuildinfo && npx tsc --noEmit  -> exit 0
+- npm run lint                              -> exit 0
+- Smoke-tested the full CLI:
+    * candidates.ts (no args) prints usage
+    * candidates.ts list -> "No candidates found"
+    * candidates.ts list bogus -> "Unknown status: bogus"
+    * candidates.ts approve (no args) -> "approve requires signature and exact mint"
+    * candidates.ts reject sig (no reason) -> "reject requires signature and reason"
+- Smoke-tested the full store cycle:
+    * queue -> pending
+    * hasCandidate -> true
+    * duplicate queue returns existing record
+    * list pending -> 1 record
+    * approve with WRONG mint -> throws "Mint confirmation does not match"
+    * approve with CORRECT mint -> approved
+    * reject approved -> throws "Approved candidate cannot be rejected"
+    * list approved -> 1 record
+    * clearCandidateStore -> 0 records
+
+Stage Summary:
+- The pipeline now persists every validated candidate to disk with status
+  tracking. Restarts no longer cause duplicate processing: the watch loop
+  checks hasCandidate() before invoking the decoder, and queueValidatedPool()
+  is idempotent on both signature and poolAddress.
+- Manual approval is a two-step defense: the human must paste BOTH the
+  signature AND the exact base mint. A typo in the mint throws. Approval
+  changes the candidate status only; no SOL is spent, no transaction is
+  signed, no buy path is invoked.
+- Replay mode lets you feed any historical Initialize2 signature through
+  the full pipeline to verify the decoder against real mainnet data
+  without waiting for live signals.
+
+Current project status:
+- Stable, type-safe, lint-clean. Three CLIs available:
+    npm run sniper:watch       - live signal -> decode -> validate -> queue
+    npm run sniper:candidates  - list / approve / reject queued candidates
+    npm run sniper:replay      - replay a historical tx through the pipeline
+- NO automatic purchases are wired. Approval is non-executing by design.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT the user provided (ghp_r4wt...) is in chat history. User should
+  revoke from https://github.com/settings/tokens after this push lands.
+- Approval still does nothing automated. Next batch should decide whether
+  approved candidates should trigger a buy, or whether approval is purely
+  a human bookkeeping step.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web UI
+  to the candidate store (read pending/approved) is the obvious next
+  web-side step.

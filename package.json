@@ -13,7 +13,9 @@
     "db:generate": "prisma generate",
     "sniper": "tsx sniper/index.ts",
     "sniper:dev": "tsx watch sniper/index.ts",
-    "sniper:watch": "tsx sniper/watch.ts"
+    "sniper:watch": "tsx sniper/watch.ts",
+    "sniper:candidates": "tsx sniper/candidates.ts",
+    "sniper:replay": "tsx sniper/replay.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
