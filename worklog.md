@@ -713,3 +713,77 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 9
+Agent: main (Z.ai Code) — triggered by user code update (process lock + partial-exit reconciliation)
+Task: Adopt user-provided reliability upgrade: process lock (prevent dual instances),
+       v2 state with baseline protection, partial-exit reconciliation, stale-lock
+       detection, v1 state rejection.
+
+Work Log:
+- Read worklog (Tasks 1-8) to establish baseline: crash recovery, RPC failover,
+  sell-only-purchased-amount. User provided a further refinement addressing partial
+  exits, baseline protection, and dual-instance prevention.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Adopted all changes VERBATIM from user:
+  - sniper/lock.ts (NEW): process lock via exclusive file open (fs.open 'wx' mode 0600).
+    acquireProcessLock() returns a release fn. Stale-lock detection: checks if PID still
+    alive via process.kill(pid, 0); EPERM = process exists but owned by another user.
+    Release only deletes lock if token matches (won't delete a newer process's lock).
+  - sniper/state.ts: VERSION 2 (rejects v1 — 'cannot safely distinguish purchased tokens
+    from pre-existing holdings'). OpenPositionState gains balanceBeforeRaw (protected
+    baseline), remainingAmountRaw (tracks partial exits), updatedAt. Stricter validation:
+    requiredString, validateIntegerString (non-negative BigInt), remaining <= purchased,
+    date validation. saveState validates before writing.
+  - sniper/position.ts: safeAmountAboveBaseline (never sell below pre-purchase balance).
+    safeSellAmount = minimum(amountAboveBaseline, remainingAmount). reconcilePosition:
+    after each exit attempt, recomputes remaining from observed balance decrease + caps
+    at amount above baseline; clears state only when remaining hits 0. executeExit returns
+    ExitResult {signature, position|null} — partial fills keep monitoring.
+    waitForBalanceChange (exitBalanceCheckAttempts). Ambiguous errors reconcile before
+    retry (preserves + updates remaining position, never loses track).
+  - sniper/index.ts: all state objects bumped to version 2 with balanceBeforeRaw +
+    remainingAmountRaw + updatedAt. Wrapped in run() with acquireProcessLock() +
+    SIGINT/SIGTERM handlers (preserve state on signal, release lock, exit 130).
+    releaseOnce prevents double-release. Fatal error preserves state with warning.
+  - sniper/config.ts: lockFile (./sniper-bot.lock), exitBalanceCheckAttempts (10, 1-60).
+  - .env.example: PROCESS_LOCK_FILE, EXIT_BALANCE_CHECK_ATTEMPTS.
+  - .gitignore: sniper-bot.lock.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors. Dashboard fully intact.
+  - sniper-bot.lock + sniper-position.json both correctly gitignored (git check-ignore).
+  - Lint: `bun run lint` clean (exit 0). (sniper/ is eslint-ignored — CLI code.)
+- Git: pushed as 1289873 (fast-forward 9754e42..1289873). 7 files, +692/-100.
+  sniper/lock.ts confirmed on remote (HTTP 200). No secrets staged. Token used via
+  one-time credential URL (not stored in git config).
+
+Stage Summary:
+- The CLI bot now has 6 additional safety properties:
+  1. Pre-existing token balances protected using original baseline (balanceBeforeRaw).
+  2. Partial-exit reconciliation (remainingAmountRaw tracks what's left to sell).
+  3. State cleared only after purchased balance is actually gone (reconcilePosition).
+  4. Ambiguous exit errors preserve + update remaining position (never lose track).
+  5. Process lock prevents two bot instances trading simultaneously (stale-lock aware).
+  6. Old incompatible state files (v1) rejected, not guessed (manual inspection required).
+- IMPORTANT: Before using this update, users must inspect + remove any existing
+  sniper-position.json from the previous v1 format — but ONLY if no position is
+  currently open. v1 files are now rejected (cannot safely distinguish purchased
+  tokens from pre-existing holdings).
+
+Current project status:
+- Stable. The CLI bot (sniper/) is production-grade for MANUAL trading with comprehensive
+  crash recovery, RPC failover, baseline protection, partial-exit reconciliation, and
+  dual-instance prevention. The dashboard reflects all trading params and simulates the
+  exit logic with real Jupiter quote enrichment. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- Automatic pool-triggered purchases still disabled. Raydium monitor needs proper
+  DEX-specific binary decoding + real vault-reserve calculations.
+- The dashboard still uses SIMULATED swaps. Wiring to real swap execution via /api/swap
+  route (returns unsigned tx for Phantom to sign) is the web next step.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
