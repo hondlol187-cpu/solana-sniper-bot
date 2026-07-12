@@ -41,9 +41,28 @@ export async function checkTokenSafety(
   const reasons: string[] = [];
   try {
     const mintInfo = await connection.getParsedAccountInfo(mint);
-    const data = mintInfo.value?.data as any;
-    if (data?.parsed?.info?.mintAuthority) reasons.push('Mint authority still active');
-    if (data?.parsed?.info?.freezeAuthority) reasons.push('Freeze authority still active');
+    if (!mintInfo.value) {
+      return { isSafe: false, reasons: ['Mint account does not exist'] };
+    }
+    const data = mintInfo.value.data as any;
+
+    // Mirror sniper/safety.ts checkMintSafety — richer checks
+    if (data?.program && data.program !== 'spl-token' && data.program !== 'spl-token-2022') {
+      reasons.push(`Unexpected mint program: ${data.program}`);
+    }
+
+    const info = data?.parsed?.info;
+    if (!info) {
+      reasons.push('Missing parsed mint information');
+    } else {
+      if (info.mintAuthority !== null) reasons.push('Mint authority still active');
+      if (info.freezeAuthority !== null) reasons.push('Freeze authority still active');
+      if (info.isInitialized !== true) reasons.push('Mint is not initialized');
+      const decimals = Number(info.decimals);
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) {
+        reasons.push(`Suspicious decimals value: ${info.decimals}`);
+      }
+    }
 
     const poolInfo = await connection.getAccountInfo(poolAddress);
     if (poolInfo && poolInfo.lamports < minLiquiditySol * 1_000_000_000) {

@@ -1,42 +1,101 @@
-import { Connection } from '@solana/web3.js';
+import { Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+
 import { config } from './config.js';
-import { buyWithJupiter } from './jupiter.js';
+import {
+  buildSwapTransaction,
+  checkRoundTrip,
+  getQuote,
+  simulateAndSend,
+  SOL_MINT,
+} from './jupiter.js';
+import { checkMintSafety } from './safety.js';
 
-// This is the main entry point for the sniper bot
-// Currently demonstrates a working Jupiter swap.
-// Expand this file + monitor.ts for full new-launch sniping.
+async function main(): Promise<void> {
+  const connection = new Connection(config.rpcUrl, {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 30_000,
+  });
 
-async function main() {
-  console.log('🚀 Starting Solana Sniper Bot...');
+  console.log(`Checking token ${config.outputMint}...`);
 
-  const connection = new Connection(config.rpcUrl, 'confirmed');
+  const safety = await checkMintSafety(
+    connection,
+    config.outputMint
+  );
 
-  // Example: Buy a specific token (replace with the mint you want)
-  // For testing, use a known token mint on mainnet or devnet
-  const exampleTokenMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC as example (safe for testing)
-
-  console.log(`Attempting to buy ${exampleTokenMint} with ${config.buyAmountSol} SOL...`);
-
-  try {
-    const signature = await buyWithJupiter(
-      connection,
-      config.keypair,
-      exampleTokenMint,
-      config.buyAmountSol
+  if (!safety.safe) {
+    throw new Error(
+      `Token rejected:\n- ${safety.reasons.join('\n- ')}`
     );
-    console.log('Transaction confirmed:', signature);
-  } catch (error) {
-    console.error('Swap failed:', error);
   }
 
-  // TODO for real sniper:
-  // - Implement monitorNewPools() in monitor.ts using logsSubscribe or gRPC
-  // - Add filters (liquidity, authorities, etc.)
-  // - Trigger buy automatically on new qualifying tokens
-  // - Add sell logic at targetMultiplier
-  // - Integrate Jito bundles for faster execution
+  console.log('Mint authority checks passed');
 
-  console.log('Bot run complete. Edit the code to make it a full autonomous sniper.');
+  const buyLamports = BigInt(
+    Math.floor(config.buyAmountSol * LAMPORTS_PER_SOL)
+  );
+
+  const balance = await connection.getBalance(
+    config.keypair.publicKey,
+    'confirmed'
+  );
+
+  const requiredBalance =
+    Number(buyLamports) + 1_000_000; // Reserve for fees.
+
+  if (balance < requiredBalance) {
+    throw new Error(
+      `Insufficient wallet balance. Have ${
+        balance / LAMPORTS_PER_SOL
+      } SOL`
+    );
+  }
+
+  console.log('Requesting buy quote...');
+
+  const buyQuote = await getQuote(
+    SOL_MINT,
+    config.outputMint,
+    buyLamports
+  );
+
+  console.log(`Expected raw token output: ${buyQuote.outAmount}`);
+  console.log(`Price impact: ${buyQuote.priceImpactPct}%`);
+
+  console.log('Checking whether token can be quoted back to SOL...');
+
+  const roundTrip = await checkRoundTrip(buyQuote);
+
+  console.log(
+    `Estimated round-trip loss: ` +
+      `${roundTrip.estimatedLossPct.toFixed(2)}%`
+  );
+
+  const transaction = await buildSwapTransaction(
+    buyQuote,
+    config.keypair
+  );
+
+  const signature = await simulateAndSend(
+    connection,
+    config.keypair,
+    transaction
+  );
+
+  if (signature === 'DRY_RUN') {
+    console.log(
+      'Dry run completed. Set LIVE_TRADING=true only after reviewing everything.'
+    );
+  } else {
+    console.log(`Swap confirmed: ${signature}`);
+    console.log(`https://solscan.io/tx/${signature}`);
+  }
 }
 
-main().catch(console.error);
+main().catch((error: unknown) => {
+  const message =
+    error instanceof Error ? error.message : String(error);
+
+  console.error(`Fatal error: ${message}`);
+  process.exitCode = 1;
+});

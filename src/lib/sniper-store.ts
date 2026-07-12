@@ -18,6 +18,10 @@ export interface SniperSettings {
   rpcUrl: string;
   /** When true + running, subscribe to real Raydium onLogs for live pool detection. */
   useRealMonitor: boolean;
+  /** Mirrors CLI LIVE_TRADING: false = dry-run (simulate only), true = live trades. */
+  liveTrading: boolean;
+  /** Max allowed price impact % (mirrors CLI MAX_PRICE_IMPACT_PCT). */
+  maxPriceImpactPct: number;
 }
 
 export type ActivityStatus = 'success' | 'failed' | 'pending';
@@ -230,6 +234,8 @@ const initialSettings: SniperSettings = {
   autoEnabled: false,
   rpcUrl: 'https://api.mainnet-beta.solana.com',
   useRealMonitor: false,
+  liveTrading: false,
+  maxPriceImpactPct: 3,
 };
 
 // Module-level ref holding the live monitor stop function (not reactive state).
@@ -396,6 +402,7 @@ export const useSniperStore = create<SniperState>((set, get) => ({
   snipeNow: () => {
     const { settings } = get();
     const symbol = pick(MEME_SYMBOLS);
+    const mode = settings.liveTrading ? 'LIVE' : 'DRY RUN';
     const logId = nextId();
     set((s) => ({
       activity: [
@@ -403,7 +410,7 @@ export const useSniperStore = create<SniperState>((set, get) => ({
           id: logId,
           time: now(),
           token: symbol,
-          action: 'Executing Jupiter swap...',
+          action: `[${mode}] Executing Jupiter swap...`,
           amount: `${settings.buyAmountSol} SOL`,
           status: 'pending' as ActivityStatus,
         },
@@ -433,7 +440,7 @@ export const useSniperStore = create<SniperState>((set, get) => ({
             a.id === logId
               ? {
                   ...a,
-                  action: 'Swap successful — position opened',
+                  action: `[${mode}] Swap successful — position opened`,
                   status: 'success' as ActivityStatus,
                   tx: pos.tx,
                 }
@@ -444,7 +451,7 @@ export const useSniperStore = create<SniperState>((set, get) => ({
         set((s) => ({
           activity: s.activity.map((a) =>
             a.id === logId
-              ? { ...a, action: 'Swap failed — slippage exceeded', status: 'failed' as ActivityStatus }
+              ? { ...a, action: `[${mode}] Swap failed — slippage exceeded`, status: 'failed' as ActivityStatus }
               : a
           ),
         }));

@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/table';
 import {
   Activity,
+  AlertTriangle,
   ExternalLink,
   Play,
   Radio,
@@ -190,6 +191,18 @@ export default function SniperDashboard() {
             <Badge
               variant="outline"
               className={
+                settings.liveTrading
+                  ? 'border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-amber-400'
+                  : 'border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-cyan-400'
+              }
+              title={settings.liveTrading ? 'Live trading mode — real funds at risk' : 'Dry-run mode — swaps simulated only'}
+            >
+              {settings.liveTrading ? '⚠ LIVE' : 'DRY RUN'}
+            </Badge>
+
+            <Badge
+              variant="outline"
+              className={
                 isRunning
                   ? 'border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-emerald-400'
                   : 'border-border bg-muted px-3 py-1.5 text-muted-foreground'
@@ -325,6 +338,41 @@ export default function SniperDashboard() {
                       />
                     </div>
                     <RealMonitorStatus />
+                  </div>
+
+                  {/* Trading mode + price impact limit (mirrors CLI config) */}
+                  <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="liveTrading" className="flex items-center gap-1.5 text-sm">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
+                          Live Trading
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          Off = dry-run (simulate). On = real funds at risk.
+                        </p>
+                      </div>
+                      <Switch
+                        id="liveTrading"
+                        checked={settings.liveTrading}
+                        onCheckedChange={(checked) => updateSetting('liveTrading', checked)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="maxPriceImpactPct" className="text-xs text-muted-foreground">
+                        Max Price Impact (%)
+                      </Label>
+                      <Input
+                        id="maxPriceImpactPct"
+                        type="number"
+                        value={settings.maxPriceImpactPct}
+                        onChange={(e) =>
+                          updateSetting('maxPriceImpactPct', parseFloat(e.target.value) || 0)
+                        }
+                        step="0.1"
+                        className="h-8"
+                      />
+                    </div>
                   </div>
                 </CardContent>
               </Card>
