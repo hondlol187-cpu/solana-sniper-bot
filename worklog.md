@@ -866,3 +866,76 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 11
+Agent: main (Z.ai Code) — triggered by user code update (RPC cluster validation + audit log)
+Task: Adopt user-provided operational-security upgrade: validate RPC cluster + lag,
+       startup preflight checks, persistent audit log with secret redaction, minimum
+       fee reserve enforcement.
+
+Work Log:
+- Read worklog (Tasks 1-10) to establish baseline: transaction-integrity guards (spend
+  limits, quote expiration, hostname validation). User identified next priorities:
+  RPC cluster validation, lag detection, startup preflight, audit log, fee reserve.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Adopted all changes VERBATIM from user:
+  - sniper/audit.ts (NEW): persistent JSONL audit log (appendFile mode 0600 + chmod).
+    redact() recursively scrubs secret-named keys (privatekey, secret, seed, token,
+    password, apikey, authorization) to [REDACTED]. Truncates long strings (500ch),
+    arrays (100 items), depth (6). Never logs private keys/tokens/full RPC URLs.
+  - sniper/preflight.ts (NEW): runPreflight() — startup checks before recovery/trading.
+    Fetches balance + slot + blockhash in parallel; validates blockhash is sane;
+    enforces minimumFeeReserveLamports (live mode only); audits 'preflight.passed'.
+  - sniper/rpc.ts: REWRITTEN — cluster validation via genesis hash (mainnet-beta/devnet/
+    testnet genesis hashes hardcoded). validateRpc() checks genesis + slot + blockTime
+    lag (rejects if > maxRpcLagSeconds) + blockhash, all with rpcHealthTimeoutMs timeout.
+    RpcPool.initialize() validates all RPCs in parallel, removes unhealthy ones, throws
+    if none remain. safeRpcLabel() logs only protocol+hostname (no path/query/credentials).
+    currentLabel() for audit logging. All failures audited. assertInitialized() guard.
+  - sniper/index.ts: rpcPool.initialize() + runPreflight() before recovery/trading.
+    audit('buy.pending'/'buy.confirmed'/'exit.completed'/'bot.fatal') at each lifecycle
+    stage. Fatal error audits with statePreserved:true. NOTE: reordered buy.confirmed
+    audit to AFTER waitForBalanceIncrease (purchasedAmount must be known first).
+  - sniper/config.ts: enumEnv() helper. expectedCluster (mainnet-beta/devnet/testnet),
+    maxRpcLagSeconds (60, 5-600), rpcHealthTimeoutMs (10000, 1k-60k),
+    minimumFeeReserveLamports (10M, 1M-1B), auditFile (./sniper-audit.jsonl).
+  - .env.example: EXPECTED_CLUSTER, MAX_RPC_LAG_SECONDS, RPC_HEALTH_TIMEOUT_MS,
+    MINIMUM_FEE_RESERVE_LAMPORTS, AUDIT_FILE.
+  - .gitignore: sniper-audit.jsonl.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors. Dashboard fully intact.
+  - sniper-audit.jsonl correctly gitignored (git check-ignore confirms).
+  - /api/quote still returns real Jupiter data.
+  - Lint: `bun run lint` clean (exit 0). (sniper/ is eslint-ignored — CLI code.)
+- Git: pushed as 15d0c99 (fast-forward 293d766..15d0c99). 7 files, +631/-24.
+  sniper/audit.ts + sniper/preflight.ts confirmed on remote (HTTP 200). No secrets
+  staged. Token used via one-time credential URL (not stored in git config).
+
+Stage Summary:
+- The CLI bot now has 6 additional operational-security properties:
+  1. Validate every fallback RPC is on the expected Solana cluster (genesis hash).
+  2. Reject stale/lagging RPC nodes (> maxRpcLagSeconds behind).
+  3. Run startup checks (preflight: balance, slot, blockhash) before recovery/trading.
+  4. Persistent security audit log (JSONL, mode 0600) for all lifecycle events.
+  5. Never log private keys, API tokens, or full private RPC URLs (redact()).
+  6. Verify wallet has enough SOL for recovery exits and fees (minimumFeeReserveLamports).
+
+Current project status:
+- Stable. The CLI bot (sniper/) is now comprehensively hardened for MANUAL trading with
+  crash recovery, RPC failover + cluster validation + lag detection, process lock,
+  partial-exit reconciliation, baseline protection, transaction-integrity guards (spend
+  limits, quote expiration, hostname validation), startup preflight, and a persistent
+  audit log. The dashboard reflects all trading params and simulates the exit logic with
+  real Jupiter quote enrichment. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- Automatic pool-triggered purchases still disabled. Raydium monitor needs proper
+  DEX-specific binary decoding + real vault-reserve calculations.
+- The dashboard still uses SIMULATED swaps. Wiring to real swap execution via /api/swap
+  route (returns unsigned tx for Phantom to sign) is the web next step.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
