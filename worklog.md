@@ -787,3 +787,82 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev + run
   agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 10
+Agent: main (Z.ai Code) — triggered by user code update (transaction-integrity guards)
+Task: Adopt user-provided transaction-integrity upgrade: spend guards (max SOL outflow),
+       quote-expiration protection, Jupiter hostname validation, keypair/publicKey mismatch
+       detection, separate buy/sell expense limits.
+
+Work Log:
+- Read worklog (Tasks 1-9) to establish baseline: crash recovery, RPC failover, process
+  lock, partial-exit reconciliation, v2 state with baseline protection. User identified
+  the next priority: transaction integrity (the bot checked signers/fee-payer but not
+  the maximum SOL a Jupiter transaction can remove).
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Adopted all changes VERBATIM from user:
+  - sniper/transaction-guard.ts (NEW): simulateWithSpendGuard() — simulates the
+    transaction with accounts:[wallet] option, reads post-simulation wallet balance,
+    computes simulatedSpendLamports = balanceBefore - simulatedBalanceAfter, rejects
+    if > expectedMaximumSpendLamports. Fails safe: if RPC doesn't return simulated
+    accounts, transaction is rejected (not signed).
+  - sniper/config.ts:
+    - validateJupiterApiUrl(): HTTPS required + hostname allowlist (lite-api.jup.ag,
+      api.jup.ag). ALLOW_CUSTOM_JUPITER_API=true overrides for self-hosted trusted
+      endpoints. Strips trailing slashes.
+    - Private-key/public-address mismatch detection: if both PRIVATE_KEY and
+      WALLET_PUBLIC_KEY are set, verifies keypair.publicKey === expectedPublicKey.
+    - New fields: maxQuoteAgeSeconds (20, 5-120), maxExtraBuyLamports (5M, 100K-50M),
+      maxExitFeeLamports (5M, 100K-50M).
+  - sniper/jupiter.ts:
+    - JupiterQuote gains receivedAtMs (timestamped at fetch time via quote.receivedAtMs
+      = Date.now() before return).
+    - BuiltSwap expands: wallet, inputMint, outputMint, quoteReceivedAtMs,
+      expectedMaximumSpendLamports (buy = inAmount + maxExtraBuyLamports; sell =
+      maxExitFeeLamports).
+    - assertQuoteFresh(): rejects quotes older than maxQuoteAgeSeconds.
+    - buildSwapTransaction(): asserts quote fresh at start; calculates + returns
+      expectedMaximumSpendLamports based on inputMint === SOL_MINT.
+    - simulateAndSend() REWRITTEN: uses simulateWithSpendGuard for both dry-run
+      (replaceRecentBlockhash:true, sigVerify:false) and live (sigVerify:true,
+      replaceRecentBlockhash:false). Asserts quote fresh before + after signing.
+      Verifies signer.publicKey === wallet. Logs simulated SOL spend.
+  - .env.example: MAX_QUOTE_AGE_SECONDS, MAX_EXTRA_BUY_LAMPORTS, MAX_EXIT_FEE_LAMPORTS,
+    ALLOW_CUSTOM_JUPITER_API.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors. Dashboard fully intact.
+  - /api/quote still returns real Jupiter data (0.05 SOL -> USDC with price impact).
+  - Lint: `bun run lint` clean (exit 0). (sniper/ is eslint-ignored — CLI code.)
+- Git: pushed as 5af931a (fast-forward b9c2efc..5af931a). 4 files, +374/-45.
+  sniper/transaction-guard.ts confirmed on remote (HTTP 200). No secrets staged.
+  Token used via one-time credential URL (not stored in git config).
+
+Stage Summary:
+- The CLI bot now has 5 additional transaction-integrity safety properties:
+  1. Simulated wallet-balance spend limits (rejects transactions that remove too much SOL).
+  2. Quote-expiration protection (rejects stale Jupiter quotes — 20s default).
+  3. Jupiter hostname + HTTPS validation (prevents MITM/phishing via custom API URL).
+  4. Private-key/public-address mismatch detection (catches config errors).
+  5. Separate limits for buy (inAmount + maxExtraBuyLamports) and sell (maxExitFeeLamports).
+- The spend guard intentionally measures the simulated wallet balance. If an RPC provider
+  does not support returning simulated accounts, the bot rejects the transaction instead
+  of signing it (fails safe).
+
+Current project status:
+- Stable. The CLI bot (sniper/) is now comprehensively hardened for MANUAL trading:
+  crash recovery, RPC failover, process lock, partial-exit reconciliation, baseline
+  protection, AND transaction-integrity guards (spend limits, quote expiration, hostname
+  validation, signer matching). The dashboard reflects all trading params and simulates
+  the exit logic with real Jupiter quote enrichment. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- Automatic pool-triggered purchases still disabled. Raydium monitor needs proper
+  DEX-specific binary decoding + real vault-reserve calculations.
+- The dashboard still uses SIMULATED swaps. Wiring to real swap execution via /api/swap
+  route (returns unsigned tx for Phantom to sign) is the web next step.
+- Real wallet connection is Phantom-only. Could add @solana/wallet-adapter.
+- Live RPC monitor's WebSocket can't connect from this sandbox. Could add retry.
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
