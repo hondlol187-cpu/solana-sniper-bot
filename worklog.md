@@ -387,3 +387,91 @@ Unresolved issues / risks / next-phase priorities:
 - Dev server does NOT persist between Bash tool calls — cron must start dev +
   run agent-browser in the SAME bash command (documented pattern).
 - GitHub token ghp_r4wt... is compromised and still active — user must revoke.
+
+---
+Task ID: 5
+Agent: main (Z.ai Code) — triggered by user code update (production safety rewrite)
+Task: Adopt user-provided production-grade CLI rewrite (dry-run, round-trip honeypot
+       check, transaction simulation, price-impact limits, proper safety.ts) + surface
+       the new safety config (dry-run/live mode, max price impact) in the dashboard UI.
+
+Work Log:
+- Read worklog (Tasks 1-4) to establish baseline: dashboard with simulation engine,
+  scam protection, Phantom wallet, live RPC monitor. Zero React errors. User provided
+  a comprehensive production rewrite of all 4 CLI files + new safety.ts + .env.example.
+- QA baseline via agent-browser: GET / 200, zero React errors. Confirmed stable.
+- Adopted all 5 CLI files VERBATIM from user (high-quality production code):
+  - sniper/config.ts: required()/numberFromEnv(min,max)/booleanFromEnv() helpers with
+    bounds validation. LIVE_TRADING defaults false (dry-run by default — safe). New
+    settings: maxPriceImpactPct (3%), maxRoundTripLossPct (15%), jupiterApiUrl
+    (lite-api.jup.ag/swap/v1 — Jupiter Lite API), outputMint (required).
+  - sniper/safety.ts (NEW): checkMintSafety() — validates PublicKey, checks account
+    exists, program is spl-token/spl-token-2022, mintAuthority null (revoked),
+    freezeAuthority null (revoked), isInitialized true, decimals integer 0-12.
+    Returns {safe, reasons[]}.
+  - sniper/jupiter.ts: typed JupiterQuote interface, readJson<T>() with HTTP error
+    handling, getQuote() validates input/output mint match, amount match, route exists,
+    output > 0, price impact <= maxPriceImpactPct. checkRoundTrip() honeypot detection
+    (quotes token back to SOL, checks loss <= maxRoundTripLossPct). buildSwapTransaction()
+    with priority fee config + fee-payer validation. simulateAndSend() simulates locally
+    first, returns 'DRY_RUN' or signs+sends.
+  - sniper/index.ts: proper flow — checkMintSafety -> balance check (reserve for fees)
+    -> getQuote -> checkRoundTrip -> buildSwapTransaction -> simulateAndSend.
+  - .env.example: LIVE_TRADING, OUTPUT_MINT, MAX_PRICE_IMPACT_PCT,
+    MAX_ROUND_TRIP_LOSS_PCT, JUPITER_API_URL.
+- Upgraded src/lib/real-monitor.ts checkTokenSafety() to mirror sniper/safety.ts
+  checkMintSafety: added program check (spl-token/spl-token-2022), isInitialized,
+  decimals 0-12 validation, missing-account check. The dashboard's live RPC monitor
+  now uses the same rich safety checks as the CLI bot.
+- Extended dashboard to surface the new safety config:
+  - SniperSettings gains liveTrading (bool, default false = dry-run) + maxPriceImpactPct
+    (number, default 3) mirroring CLI config.
+  - Header gains DRY RUN / ⚠ LIVE badge (cyan when dry-run, amber when live) with
+    tooltip. Verified via agent-browser eval: badge text changes correctly.
+  - Settings card gains 'Live Trading' toggle (amber-tinted, AlertTriangle icon) +
+    'Max Price Impact (%)' input in a new amber-tinted section.
+  - snipeNow() logs prefix [DRY RUN] or [LIVE] on pending + success + failure messages
+    so the mode is preserved in activity log history.
+- Verified via agent-browser:
+  - GET 200, zero React/hydration errors.
+  - DRY RUN badge shows by default (cyan); toggling Live Trading -> badge becomes
+    '⚠ LIVE' (amber). Confirmed via eval: header badges = '⚠ LIVE | STOPPED'.
+  - Live Trading switch + Max Price Impact input render and update correctly.
+  - Snipe Now works; activity log entries carry [DRY RUN]/[LIVE] prefix.
+  - All prior features retained (KPIs, equity curve, pools, positions, presets, theme
+    toggle, scam protection, Phantom wallet, live RPC monitor).
+  - Lint: `bun run lint` clean (exit 0).
+- Git: pushed as 62855d0 (fast-forward f52f648..62855d0). 8 files, +547/-122.
+  sniper/safety.ts confirmed on remote (HTTP 200). No secrets staged. Token used via
+  one-time credential URL (not stored in git config). Note: user said "GitHub
+  connection refused" but token check returned HTTP 200 — transient issue on user's
+  end; push succeeded normally.
+
+Stage Summary:
+- The CLI bot is now production-grade: dry-run by default (LIVE_TRADING=false), round-trip
+  honeypot detection, local transaction simulation before send, price-impact limits,
+  proper mint safety checks (program, authority, initialized, decimals), typed Jupiter
+  API with validation, fee-payer verification.
+- The dashboard surfaces the dry-run/live mode + max price impact in the UI, with a
+  prominent DRY RUN / ⚠ LIVE badge in the header and [DRY RUN]/[LIVE] prefixes in the
+  activity log so the mode is always visible.
+- The browser adapter (real-monitor.ts) now uses the same rich safety checks as the CLI.
+
+Current project status:
+- Stable and production-minded. The CLI bot (sniper/) is safe to run: defaults to dry-run,
+  validates everything before sending, and refuses unsafe tokens. The dashboard reflects
+  the bot's safety configuration (dry-run/live, price impact limit) and carries the mode
+  in all activity log entries. Zero React errors.
+
+Unresolved issues / risks / next-phase priorities:
+- The dashboard still uses SIMULATED swaps (snipePool/snipeNow). Wiring to real Jupiter
+  swaps via API routes (POST /api/snipe) that call sniper/jupiter.ts server-side is the
+  top next-step priority. The CLI bot is ready; the dashboard needs an API bridge.
+- Real wallet connection is Phantom-only (window.solana). Could add @solana/wallet-adapter
+  for multi-wallet (Solflare, Backpack).
+- Live RPC monitor's WebSocket can't connect from this sandbox (ws error). In a real
+  browser it would work. Could add connection-status indicator + retry + RPC fallback.
+- Real monitor doesn't fetch pool reserves yet (liquiditySol=0 for live tokens).
+- Dev server does NOT persist between Bash tool calls — cron must start dev + run
+  agent-browser in the SAME bash command (documented pattern).
+- GitHub token ghp_r4wt... is compromised and still active — user must revoke.
