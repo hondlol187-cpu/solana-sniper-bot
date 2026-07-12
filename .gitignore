@@ -70,3 +70,4 @@ server.log
 /*.keypair
 sniper-position.json
 sniper-position.json.tmp
+sniper-bot.lock

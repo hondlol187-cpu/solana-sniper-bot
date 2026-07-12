@@ -30,6 +30,7 @@ import {
 
 import { RpcPool } from './rpc.js';
 import { checkMintSafety } from './safety.js';
+import { acquireProcessLock } from './lock.js';
 
 async function recoverPendingBuy(
   rpcPool: RpcPool,
@@ -61,18 +62,27 @@ async function recoverPendingBuy(
     );
   }
 
+  const purchasedAmount =
+    currentBalance - balanceBefore;
+
   const recovered: OpenPositionState = {
-    version: 1,
+    version: 2,
     status: 'open',
     mint: pending.mint,
-    purchasedAmountRaw: (
-      currentBalance - balanceBefore
-    ).toString(),
+    balanceBeforeRaw:
+      pending.balanceBeforeRaw,
+    purchasedAmountRaw:
+      purchasedAmount.toString(),
+    remainingAmountRaw:
+      purchasedAmount.toString(),
     entryLamports:
       pending.entryLamports,
     buySignature:
       'RECOVERED_AFTER_RESTART',
-    createdAt: pending.createdAt,
+    createdAt:
+      pending.createdAt,
+    updatedAt:
+      new Date().toISOString(),
   };
 
   await saveState(recovered);
@@ -201,7 +211,7 @@ async function main(): Promise<void> {
   );
 
   const pendingState: PendingBuyState = {
-    version: 1,
+    version: 2,
     status: 'pending-buy',
     mint: outputMint.toBase58(),
     balanceBeforeRaw:
@@ -254,17 +264,24 @@ async function main(): Promise<void> {
       balanceBefore
     );
 
+  const now = new Date().toISOString();
+
   const openPosition: OpenPositionState = {
-    version: 1,
+    version: 2,
     status: 'open',
     mint: outputMint.toBase58(),
+    balanceBeforeRaw:
+      balanceBefore.toString(),
     purchasedAmountRaw:
+      purchasedAmount.toString(),
+    remainingAmountRaw:
       purchasedAmount.toString(),
     entryLamports:
       buyLamports.toString(),
     buySignature,
     createdAt:
       pendingState.createdAt,
+    updatedAt: now,
   };
 
   await saveState(openPosition);
@@ -280,7 +297,66 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((error: unknown) => {
+async function run(): Promise<void> {
+  const releaseLock =
+    await acquireProcessLock();
+
+  let released = false;
+
+  const releaseOnce = async () => {
+    if (released) return;
+    released = true;
+
+    await releaseLock();
+  };
+
+  const handleSignal = async (
+    signal: string
+  ) => {
+    console.warn(
+      `Received ${signal}; preserving position state`
+    );
+
+    await releaseOnce();
+    process.exit(130);
+  };
+
+  const handleSigint = () => {
+    void handleSignal('SIGINT');
+  };
+
+  const handleSigterm = () => {
+    void handleSignal('SIGTERM');
+  };
+
+  process.once(
+    'SIGINT',
+    handleSigint
+  );
+
+  process.once(
+    'SIGTERM',
+    handleSigterm
+  );
+
+  try {
+    await main();
+  } finally {
+    process.removeListener(
+      'SIGINT',
+      handleSigint
+    );
+
+    process.removeListener(
+      'SIGTERM',
+      handleSigterm
+    );
+
+    await releaseOnce();
+  }
+}
+
+run().catch((error: unknown) => {
   const message =
     error instanceof Error
       ? error.message

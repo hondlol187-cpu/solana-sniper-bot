@@ -183,6 +183,17 @@ export const config = {
     1,
     10
   ),
+
+  lockFile:
+    process.env.PROCESS_LOCK_FILE?.trim() ||
+    './sniper-bot.lock',
+
+  exitBalanceCheckAttempts: numberEnv(
+    'EXIT_BALANCE_CHECK_ATTEMPTS',
+    10,
+    1,
+    60
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

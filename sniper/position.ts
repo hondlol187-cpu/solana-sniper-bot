@@ -16,6 +16,7 @@ import {
 import {
   OpenPositionState,
   clearState,
+  saveState,
 } from './state.js';
 
 import {
@@ -33,6 +34,13 @@ function minimum(
   right: bigint
 ): bigint {
   return left < right ? left : right;
+}
+
+function maximum(
+  left: bigint,
+  right: bigint
+): bigint {
+  return left > right ? left : right;
 }
 
 export async function getRawTokenBalance(
@@ -118,7 +126,44 @@ export async function waitForBalanceIncrease(
   }
 
   throw new Error(
-    'Token balance did not increase after the purchase'
+    'Token balance did not increase after purchase'
+  );
+}
+
+function safeAmountAboveBaseline(
+  currentBalance: bigint,
+  balanceBefore: bigint
+): bigint {
+  /*
+   * Never permit the bot to sell below the token
+   * balance that existed before the purchase.
+   */
+  return currentBalance > balanceBefore
+    ? currentBalance - balanceBefore
+    : 0n;
+}
+
+function safeSellAmount(
+  currentBalance: bigint,
+  position: OpenPositionState
+): bigint {
+  const balanceBefore = BigInt(
+    position.balanceBeforeRaw
+  );
+
+  const remainingAmount = BigInt(
+    position.remainingAmountRaw
+  );
+
+  const amountAboveBaseline =
+    safeAmountAboveBaseline(
+      currentBalance,
+      balanceBefore
+    );
+
+  return minimum(
+    amountAboveBaseline,
+    remainingAmount
   );
 }
 
@@ -139,16 +184,115 @@ async function obtainExitQuote(
   );
 }
 
+async function waitForBalanceChange(
+  rpcPool: RpcPool,
+  mint: PublicKey,
+  previousBalance: bigint
+): Promise<bigint> {
+  let lastBalance = previousBalance;
+
+  for (
+    let attempt = 0;
+    attempt <
+    config.exitBalanceCheckAttempts;
+    attempt += 1
+  ) {
+    lastBalance =
+      await getBalanceWithFailover(
+        rpcPool,
+        config.walletPublicKey,
+        mint
+      );
+
+    if (lastBalance < previousBalance) {
+      return lastBalance;
+    }
+
+    await sleep(1_000);
+  }
+
+  return lastBalance;
+}
+
+async function reconcilePosition(
+  position: OpenPositionState,
+  previousBalance: bigint,
+  currentBalance: bigint
+): Promise<OpenPositionState | null> {
+  const previousRemaining = BigInt(
+    position.remainingAmountRaw
+  );
+
+  const observedDecrease =
+    previousBalance > currentBalance
+      ? previousBalance - currentBalance
+      : 0n;
+
+  const remainingAfterDecrease =
+    maximum(
+      previousRemaining -
+        observedDecrease,
+      0n
+    );
+
+  const balanceBefore = BigInt(
+    position.balanceBeforeRaw
+  );
+
+  const stillAboveBaseline =
+    safeAmountAboveBaseline(
+      currentBalance,
+      balanceBefore
+    );
+
+  /*
+   * Remaining tracked position can never exceed the
+   * amount currently present above the protected
+   * baseline.
+   */
+  const reconciledRemaining =
+    minimum(
+      remainingAfterDecrease,
+      stillAboveBaseline
+    );
+
+  if (reconciledRemaining <= 0n) {
+    await clearState();
+    return null;
+  }
+
+  const updated: OpenPositionState = {
+    ...position,
+    remainingAmountRaw:
+      reconciledRemaining.toString(),
+    updatedAt:
+      new Date().toISOString(),
+  };
+
+  await saveState(updated);
+
+  return updated;
+}
+
+interface ExitResult {
+  signature: string;
+  position: OpenPositionState | null;
+}
+
 async function executeExit(
   rpcPool: RpcPool,
-  position: OpenPositionState,
+  initialPosition: OpenPositionState,
   mint: PublicKey
-): Promise<string> {
+): Promise<ExitResult> {
   if (!config.keypair) {
     throw new Error(
       'Cannot exit without a live signer'
     );
   }
+
+  let position = initialPosition;
+  let lastSignature =
+    'NO_TRANSACTION_SUBMITTED';
 
   for (
     let attempt = 1;
@@ -162,27 +306,20 @@ async function executeExit(
         mint
       );
 
-    const purchasedAmount = BigInt(
-      position.purchasedAmountRaw
-    );
-
-    /*
-     * Never sell more than this bot purchased.
-     * This protects pre-existing holdings.
-     */
-    const amountToSell = minimum(
-      currentBalance,
-      purchasedAmount
-    );
-
-    if (amountToSell <= 0n) {
-      console.warn(
-        'Purchased position is no longer present'
+    const amountToSell =
+      safeSellAmount(
+        currentBalance,
+        position
       );
 
+    if (amountToSell <= 0n) {
       await clearState();
 
-      return 'POSITION_ALREADY_CLOSED';
+      return {
+        signature:
+          'POSITION_ALREADY_CLOSED',
+        position: null,
+      };
     }
 
     const quote =
@@ -198,11 +335,40 @@ async function executeExit(
       );
 
     try {
-      return await simulateAndSend(
-        rpcPool.current(),
-        config.keypair,
-        builtSwap
-      );
+      lastSignature =
+        await simulateAndSend(
+          rpcPool.current(),
+          config.keypair,
+          builtSwap
+        );
+
+      const balanceAfter =
+        await waitForBalanceChange(
+          rpcPool,
+          mint,
+          currentBalance
+        );
+
+      const reconciled =
+        await reconcilePosition(
+          position,
+          currentBalance,
+          balanceAfter
+        );
+
+      if (!reconciled) {
+        return {
+          signature: lastSignature,
+          position: null,
+        };
+      }
+
+      /*
+       * A partial fill or external balance change was
+       * detected. Continue exiting only the safe
+       * remainder above the original baseline.
+       */
+      position = reconciled;
     } catch (error) {
       const message =
         error instanceof Error
@@ -214,9 +380,8 @@ async function executeExit(
       );
 
       /*
-       * The transaction may have been broadcast but
-       * confirmation may have timed out. Check the
-       * balance before building another transaction.
+       * Broadcast may have succeeded even if
+       * confirmation failed. Reconcile before retrying.
        */
       const balanceAfterError =
         await getBalanceWithFailover(
@@ -225,16 +390,22 @@ async function executeExit(
           mint
         );
 
-      if (
-        balanceAfterError <
-        currentBalance
-      ) {
-        console.warn(
-          'Token balance decreased after the error; treating exit as submitted'
+      const reconciled =
+        await reconcilePosition(
+          position,
+          currentBalance,
+          balanceAfterError
         );
 
-        return 'EXIT_SUBMITTED_CONFIRMATION_UNKNOWN';
+      if (!reconciled) {
+        return {
+          signature:
+            'EXIT_SUBMITTED_CONFIRMATION_UNKNOWN',
+          position: null,
+        };
       }
+
+      position = reconciled;
 
       if (
         attempt <
@@ -252,14 +423,19 @@ async function executeExit(
     }
   }
 
-  throw new Error(
-    'All exit attempts failed; position state was preserved for recovery'
-  );
+  /*
+   * The updated remaining position is already saved.
+   * Do not clear it.
+   */
+  return {
+    signature: lastSignature,
+    position,
+  };
 }
 
 export async function monitorAndExit(
   rpcPool: RpcPool,
-  position: OpenPositionState
+  initialPosition: OpenPositionState
 ): Promise<string> {
   if (
     !config.liveTrading ||
@@ -271,18 +447,20 @@ export async function monitorAndExit(
   }
 
   const mint = new PublicKey(
-    position.mint
+    initialPosition.mint
   );
 
   const entryLamports = BigInt(
-    position.entryLamports
+    initialPosition.entryLamports
   );
 
   const deadline =
     new Date(
-      position.createdAt
+      initialPosition.createdAt
     ).getTime() +
     config.maxHoldMinutes * 60_000;
+
+  let position = initialPosition;
 
   while (true) {
     try {
@@ -293,20 +471,13 @@ export async function monitorAndExit(
           mint
         );
 
-      const purchasedAmount = BigInt(
-        position.purchasedAmountRaw
-      );
-
-      const amountToValue = minimum(
-        currentBalance,
-        purchasedAmount
-      );
-
-      if (amountToValue <= 0n) {
-        console.warn(
-          'Position appears to be closed'
+      const amountToValue =
+        safeSellAmount(
+          currentBalance,
+          position
         );
 
+      if (amountToValue <= 0n) {
         await clearState();
 
         return 'POSITION_ALREADY_CLOSED';
@@ -362,22 +533,28 @@ export async function monitorAndExit(
           `Exit triggered: ${reason}`
         );
 
-        const signature =
+        const result =
           await executeExit(
             rpcPool,
             position,
             mint
           );
 
-        await clearState();
+        if (!result.position) {
+          return result.signature;
+        }
 
-        return signature;
+        /*
+         * Partial position remains. Keep monitoring and
+         * attempting the exit.
+         */
+        position = result.position;
+
+        console.warn(
+          `Partial position remains: ${position.remainingAmountRaw}`
+        );
       }
     } catch (error) {
-      /*
-       * Do not crash and abandon an open position
-       * because of a temporary RPC/Jupiter failure.
-       */
       const message =
         error instanceof Error
           ? error.message
