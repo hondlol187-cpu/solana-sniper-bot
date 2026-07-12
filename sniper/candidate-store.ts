@@ -15,7 +15,8 @@ import {
 export type CandidateStatus =
   | 'pending'
   | 'approved'
-  | 'rejected';
+  | 'rejected'
+  | 'executed';
 
 export interface CandidateRecord {
   signature: string;
@@ -37,6 +38,12 @@ export interface CandidateRecord {
   rejection?: {
     rejectedAt: string;
     reason: string;
+  };
+
+  execution?: {
+    completedAt: string;
+    mode: 'live';
+    result: string;
   };
 }
 
@@ -128,6 +135,7 @@ function validateStore(
         'pending',
         'approved',
         'rejected',
+        'executed',
       ].includes(
         String(item.status)
       )
@@ -343,10 +351,11 @@ export async function approveCandidate(
     }
 
     if (
-      candidate.status === 'rejected'
+      candidate.status === 'rejected' ||
+      candidate.status === 'executed'
     ) {
       throw new Error(
-        'Rejected candidate cannot be approved'
+        `${candidate.status} candidate cannot be approved`
       );
     }
 
@@ -461,6 +470,80 @@ export async function listCandidates(
             left.updatedAt
           ).getTime()
       );
+  });
+}
+
+export async function getCandidate(
+  signature: string
+): Promise<CandidateRecord | null> {
+  return serialize(async () => {
+    const store =
+      await loadStoreUnsafe();
+
+    return (
+      store.candidates.find(
+        (candidate) =>
+          candidate.signature ===
+          signature
+      ) ?? null
+    );
+  });
+}
+
+export async function markCandidateExecuted(
+  signature: string,
+  result: string
+): Promise<CandidateRecord> {
+  return serialize(async () => {
+    const store =
+      await loadStoreUnsafe();
+
+    const candidate =
+      store.candidates.find(
+        (item) =>
+          item.signature === signature
+      );
+
+    if (!candidate) {
+      throw new Error(
+        'Candidate was not found'
+      );
+    }
+
+    if (
+      candidate.status !== 'approved'
+    ) {
+      throw new Error(
+        `Only approved candidates can be marked executed; current status is ${candidate.status}`
+      );
+    }
+
+    const now =
+      new Date().toISOString();
+
+    candidate.status = 'executed';
+    candidate.updatedAt = now;
+    candidate.execution = {
+      completedAt: now,
+      mode: 'live',
+      result,
+    };
+
+    await saveStoreUnsafe(store);
+
+    await audit(
+      'candidate.executed',
+      {
+        signature,
+        poolAddress:
+          candidate.poolAddress,
+        baseMint:
+          candidate.baseMint,
+        result,
+      }
+    );
+
+    return candidate;
   });
 }
 

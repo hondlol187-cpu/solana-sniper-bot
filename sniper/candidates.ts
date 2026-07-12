@@ -26,6 +26,7 @@ async function list(
     'pending',
     'approved',
     'rejected',
+    'executed',
   ];
 
   if (

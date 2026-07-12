@@ -1373,3 +1373,105 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web UI
   to the candidate store (read pending/approved) is the obvious next
   web-side step.
+
+---
+Task ID: 17
+Agent: main (Z.ai Code)
+Task: Add manually-invoked approved-candidate execution.
+      Dry-run by default. --live requires BOTH the CLI flag AND LIVE_TRADING=true.
+      Watch mode still never trades automatically. Candidate is marked 'executed'
+      only after the full live trade lifecycle completes.
+
+Work Log:
+- Synced to origin/main (HEAD = e988967 from Task ID 16).
+- Extended candidate-store.ts:
+    * CandidateStatus now includes 'executed'
+    * CandidateRecord has new optional `execution` field
+      { completedAt, mode: 'live', result }
+    * validateStore() accepts 'executed' as a valid status
+    * approveCandidate() now rejects both 'rejected' AND 'executed' candidates
+      with the message "<status> candidate cannot be approved"
+    * New getCandidate(signature) -> CandidateRecord | null (read-only)
+    * New markCandidateExecuted(signature, result) - only works on approved
+      candidates, throws otherwise. Audits as 'candidate.executed'.
+- Refactored sniper/index.ts to be importable as a module:
+    * Added `import { pathToFileURL } from 'node:url'`
+    * Changed `async function run()` -> `export async function run()`
+    * Replaced bottom `run().catch(...)` with:
+        - runFromCommandLine() wrapper that catches + audits + sets exitCode
+        - CLI guard: only runs when invokedFile matches import.meta.url
+      This prevents index.ts from immediately buying when imported by
+      execute-approved.ts.
+- Created sniper/execute-approved.ts implementing the full execution flow:
+    1. Parse <signature> <exact-mint> [--dry-run|--live] from argv
+    2. Set OUTPUT_MINT and LIVE_TRADING env BEFORE importing config-loading
+       modules (so the trading module picks up the right mint + mode)
+    3. getCandidate(signature) -> must exist
+    4. candidate.status must be 'approved'
+    5. candidate.baseMint must === exactMint (case-sensitive string match)
+    6. If --live: config.liveTrading must also be true (two-key confirmation)
+    7. Initialize RpcPool, ensureCurrentHealthy()
+    8. Reconstruct RaydiumPoolSignal from candidate.signature + candidate.pool.slot
+    9. Re-run decodeRaydiumInitialize2() (fresh fetch of the historical tx)
+   10. Re-run validateDecodedRaydiumPool() (fresh vault balance check)
+   11. Re-run acceptPoolForTrading() (gate)
+   12. accepted.poolAddress + accepted.baseMint must match candidate's
+   13. Audit 'candidate.execution.requested' with mode
+   14. Print 'APPROVED CANDIDATE REVALIDATED' banner
+   15. Dynamically import('./index.js') and call tradingModule.run()
+   16. If --live: markCandidateExecuted(signature, 'full trade lifecycle completed')
+       Else: audit 'candidate.execution.dry-run.completed', leave status approved
+- Updated sniper/candidates.ts: added 'executed' to validStatuses for `list` filter.
+- Added "sniper:execute-approved": "tsx sniper/execute-approved.ts" to package.json.
+
+Verification:
+- rm -f .tsbuildinfo && npx tsc --noEmit  -> exit 0
+- npm run lint                              -> exit 0
+- Smoke-tested all status transitions:
+    * queue -> pending
+    * approve -> approved
+    * markCandidateExecuted -> executed (with execution sub-record)
+    * approve executed -> throws "executed candidate cannot be approved"
+    * markCandidateExecuted on executed -> throws "current status is executed"
+    * markCandidateExecuted on pending -> throws "current status is pending"
+    * getCandidate returns null for unknown signature
+- Smoke-tested all execute-approved.ts validation paths:
+    * No args -> prints usage
+    * Bad mode -> "Mode must be --dry-run or --live"
+    * Candidate not found -> "Approved candidate was not found"
+    * Wrong exact-mint -> "Exact mint confirmation failed. Candidate mint: X. Provided mint: Y."
+    * --live without LIVE_TRADING=true -> "--live was requested but LIVE_TRADING is not true..."
+
+Stage Summary:
+- The full safety chain is now: signal -> decode -> validate -> gate -> queue
+  -> manual approve (with exact-mint) -> manual execute-approved (with
+  exact-mint + fresh revalidation + --live flag + LIVE_TRADING=true).
+- Five independent confirmations required before any SOL leaves the wallet:
+    1. Approve CLI: signature + exact-mint match
+    2. Execute CLI: signature + exact-mint match (again, fresh)
+    3. Execute CLI: --live flag
+    4. Environment: LIVE_TRADING=true
+    5. Runtime: fresh on-chain decode + validate + gate must reproduce the
+       same poolAddress + baseMint as the approved candidate
+- Watch mode still never trades. It only queues candidates for human review.
+- Dry-run leaves the candidate approved. Live marks it executed only after
+  the full trade lifecycle (buy + monitor + exit) completes without throwing.
+
+Current project status:
+- Stable, type-safe, lint-clean. Four CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run or live-execute an approved candidate
+- NO automatic purchases. Every trade requires explicit human action at
+  multiple steps.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_r4wt... is in chat history (now 3 times). User MUST revoke
+  from https://github.com/settings/tokens after this push.
+- Live execution has not been end-to-end tested with a real approved
+  candidate + real RPC + real wallet. Should be tested with a tiny amount
+  of SOL on devnet or a burner mainnet wallet first.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web UI
+  to read the candidate store (list pending/approved/executed) is the
+  obvious next web-side step.

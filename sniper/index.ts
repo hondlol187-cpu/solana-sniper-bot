@@ -3,6 +3,10 @@ import {
   PublicKey,
 } from '@solana/web3.js';
 
+import {
+  pathToFileURL,
+} from 'node:url';
+
 import { config } from './config.js';
 
 import {
@@ -384,7 +388,7 @@ async function main(): Promise<void> {
   );
 }
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   const releaseLock =
     await acquireProcessLock();
 
@@ -443,27 +447,44 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error: unknown) => {
-  const message =
-    error instanceof Error
-      ? error.message
-      : String(error);
+async function runFromCommandLine(): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
 
-  console.error(
-    `Fatal error: ${message}`
-  );
+    console.error(
+      `Fatal error: ${message}`
+    );
 
-  console.error(
-    'Position state was preserved. Do not start another purchase before checking it.'
-  );
+    console.error(
+      'Position state was preserved. Do not start another purchase before checking it.'
+    );
 
-  void audit(
-    'bot.fatal',
-    {
-      message,
-      statePreserved: true,
-    }
-  );
+    await audit(
+      'bot.fatal',
+      {
+        message,
+        statePreserved: true,
+      }
+    );
 
-  process.exitCode = 1;
-});
+    process.exitCode = 1;
+  }
+}
+
+const invokedFile =
+  process.argv[1];
+
+if (
+  invokedFile &&
+  import.meta.url ===
+    pathToFileURL(
+      invokedFile
+    ).href
+) {
+  void runFromCommandLine();
+}
