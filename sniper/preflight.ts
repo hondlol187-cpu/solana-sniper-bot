@@ -7,18 +7,32 @@ import { config } from './config.js';
 import { audit } from './audit.js';
 import { RpcPool } from './rpc.js';
 
+export type PreflightMode =
+  | 'new-trade'
+  | 'recovery'
+  | 'dry-run';
+
 export interface PreflightResult {
+  mode: PreflightMode;
   wallet: string;
   solBalanceLamports: number;
   solBalance: number;
   currentSlot: number;
   rpc: string;
+  requiredReserveLamports: number;
 }
 
 export async function runPreflight(
   rpcPool: RpcPool,
-  wallet: PublicKey
+  wallet: PublicKey,
+  mode: PreflightMode
 ): Promise<PreflightResult> {
+  /*
+   * Recheck the selected RPC immediately before
+   * performing wallet or recovery operations.
+   */
+  await rpcPool.ensureCurrentHealthy();
+
   const result =
     await rpcPool.call(
       async (connection) => {
@@ -33,11 +47,11 @@ export async function runPreflight(
           ),
 
           connection.getSlot(
-            'processed'
+            'finalized'
           ),
 
           connection.getLatestBlockhash(
-            'processed'
+            'confirmed'
           ),
         ]);
 
@@ -58,21 +72,37 @@ export async function runPreflight(
       }
     );
 
+  const requiredReserveLamports =
+    mode === 'recovery'
+      ? config
+          .recoveryMinimumFeeReserveLamports
+      : mode === 'new-trade'
+        ? config
+            .minimumFeeReserveLamports
+        : 0;
+
   if (
     config.liveTrading &&
     result.balance <
-      config.minimumFeeReserveLamports
+      requiredReserveLamports
   ) {
+    const action =
+      mode === 'recovery'
+        ? 'recover or exit the saved position'
+        : 'open a new position';
+
     throw new Error(
       [
-        'Wallet does not have the minimum fee reserve.',
-        `Required: ${config.minimumFeeReserveLamports} lamports.`,
+        `Wallet does not have enough SOL to ${action}.`,
+        `Mode: ${mode}.`,
+        `Required reserve: ${requiredReserveLamports} lamports.`,
         `Available: ${result.balance} lamports.`,
       ].join(' ')
     );
   }
 
   const preflight: PreflightResult = {
+    mode,
     wallet: wallet.toBase58(),
     solBalanceLamports:
       result.balance,
@@ -81,6 +111,7 @@ export async function runPreflight(
       LAMPORTS_PER_SOL,
     currentSlot: result.slot,
     rpc: rpcPool.currentLabel(),
+    requiredReserveLamports,
   };
 
   await audit(
@@ -91,9 +122,9 @@ export async function runPreflight(
   console.log(
     [
       'Preflight passed.',
+      `Mode: ${mode}.`,
       `Cluster: ${config.expectedCluster}.`,
       `RPC: ${preflight.rpc}.`,
-      `Wallet: ${preflight.wallet}.`,
       `Balance: ${preflight.solBalance.toFixed(
         6
       )} SOL.`,

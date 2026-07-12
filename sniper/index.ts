@@ -129,19 +129,37 @@ async function main(): Promise<void> {
 
   await rpcPool.initialize();
 
-  await runPreflight(
-    rpcPool,
-    config.walletPublicKey
-  );
-
   /*
-   * Recovery always happens before allowing
-   * another purchase.
+   * Load recovery state before deciding which
+   * reserve rule preflight should enforce.
    */
   const existingState =
     await loadState();
 
+  const preflightMode =
+    !config.liveTrading
+      ? 'dry-run'
+      : existingState
+        ? 'recovery'
+        : 'new-trade';
+
+  await runPreflight(
+    rpcPool,
+    config.walletPublicKey,
+    preflightMode
+  );
+
   if (existingState) {
+    await audit(
+      'recovery.starting',
+      {
+        state:
+          existingState.status,
+        mint:
+          existingState.mint,
+      }
+    );
+
     await recoverExistingState(
       rpcPool,
       existingState
@@ -264,6 +282,23 @@ async function main(): Promise<void> {
       buyQuote,
       config.walletPublicKey
     );
+
+  /*
+   * The RPC may have become stale after quote and
+   * transaction construction.
+   */
+  await rpcPool.ensureCurrentHealthy();
+
+  await audit(
+    'buy.broadcast.preflight',
+    {
+      rpc:
+        rpcPool.currentLabel(),
+      quoteAgeMs:
+        Date.now() -
+        buyQuote.receivedAtMs,
+    }
+  );
 
   const buySignature =
     await simulateAndSend(

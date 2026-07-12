@@ -22,6 +22,7 @@ const genesisHashes = {
 interface RpcEntry {
   connection: Connection;
   safeLabel: string;
+  lastValidatedAt: number;
 }
 
 function safeRpcLabel(
@@ -103,12 +104,17 @@ async function validateRpc(
     );
   }
 
+  /*
+   * Finalized slots reliably have block-time data.
+   * A processed slot may be too recent and return
+   * null from getBlockTime().
+   */
   const slot = await withTimeout(
     entry.connection.getSlot(
-      'processed'
+      'finalized'
     ),
     config.rpcHealthTimeoutMs,
-    `${entry.safeLabel} slot check`
+    `${entry.safeLabel} finalized-slot check`
   );
 
   const blockTime =
@@ -183,6 +189,8 @@ export class RpcPool {
 
         safeLabel:
           safeRpcLabel(url),
+
+        lastValidatedAt: 0,
       })
     );
   }
@@ -193,6 +201,10 @@ export class RpcPool {
         this.entries.map(
           async (entry) => {
             await validateRpc(entry);
+
+            entry.lastValidatedAt =
+              Date.now();
+
             return entry;
           }
         )
@@ -278,6 +290,91 @@ export class RpcPool {
     return this.entries[
       this.currentIndex
     ].safeLabel;
+  }
+
+  private currentEntry(): RpcEntry {
+    this.assertInitialized();
+
+    return this.entries[
+      this.currentIndex
+    ];
+  }
+
+  async ensureCurrentHealthy(): Promise<void> {
+    this.assertInitialized();
+
+    const maximumAgeMs =
+      config.rpcRecheckIntervalSeconds *
+      1_000;
+
+    /*
+     * Do not perform another network health check if
+     * the current RPC was validated recently.
+     */
+    const current =
+      this.currentEntry();
+
+    if (
+      Date.now() -
+        current.lastValidatedAt <
+      maximumAgeMs
+    ) {
+      return;
+    }
+
+    let lastError: unknown;
+
+    for (
+      let attempt = 0;
+      attempt < this.entries.length;
+      attempt += 1
+    ) {
+      const entry =
+        this.currentEntry();
+
+      try {
+        await validateRpc(entry);
+
+        entry.lastValidatedAt =
+          Date.now();
+
+        await audit(
+          'rpc.revalidated',
+          {
+            rpc: entry.safeLabel,
+          }
+        );
+
+        return;
+      } catch (error) {
+        lastError = error;
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        await audit(
+          'rpc.revalidation.failed',
+          {
+            rpc: entry.safeLabel,
+            message,
+          }
+        );
+
+        console.warn(
+          `RPC became unhealthy: ${entry.safeLabel}: ${message}`
+        );
+
+        this.rotate();
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(
+          'No healthy RPC endpoint available'
+        );
   }
 
   rotate(): Connection {

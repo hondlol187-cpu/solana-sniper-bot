@@ -349,6 +349,20 @@ export const config = {
   auditFile:
     process.env.AUDIT_FILE?.trim() ||
     './sniper-audit.jsonl',
+
+  recoveryMinimumFeeReserveLamports: numberEnv(
+    'RECOVERY_MINIMUM_FEE_RESERVE_LAMPORTS',
+    500_000,
+    50_000,
+    100_000_000
+  ),
+
+  rpcRecheckIntervalSeconds: numberEnv(
+    'RPC_RECHECK_INTERVAL_SECONDS',
+    30,
+    5,
+    600
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

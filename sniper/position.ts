@@ -24,6 +24,8 @@ import {
   RpcPool,
 } from './rpc.js';
 
+import { audit } from './audit.js';
+
 const sleep = (milliseconds: number) =>
   new Promise<void>((resolve) =>
     setTimeout(resolve, milliseconds)
@@ -335,6 +337,20 @@ async function executeExit(
       );
 
     try {
+      await rpcPool.ensureCurrentHealthy();
+
+      await audit(
+        'exit.broadcast.preflight',
+        {
+          rpc:
+            rpcPool.currentLabel(),
+          mint:
+            mint.toBase58(),
+          amountToSell:
+            amountToSell.toString(),
+        }
+      );
+
       lastSignature =
         await simulateAndSend(
           rpcPool.current(),
