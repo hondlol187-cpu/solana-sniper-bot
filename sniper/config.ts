@@ -157,6 +157,32 @@ export const config = {
   jupiterApiUrl:
     process.env.JUPITER_API_URL?.trim() ??
     'https://lite-api.jup.ag/swap/v1',
+
+  rpcUrls: (
+    process.env.RPC_URLS?.trim() ||
+    required('RPC_URL')
+  )
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean),
+
+  stateFile:
+    process.env.POSITION_STATE_FILE?.trim() ||
+    './sniper-position.json',
+
+  emergencyExitMaxPriceImpactPct: numberEnv(
+    'EMERGENCY_EXIT_MAX_PRICE_IMPACT_PCT',
+    50,
+    1,
+    90
+  ),
+
+  operationRetries: numberEnv(
+    'OPERATION_RETRIES',
+    4,
+    1,
+    10
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);
