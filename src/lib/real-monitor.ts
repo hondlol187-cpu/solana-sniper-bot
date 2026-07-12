@@ -1,27 +1,31 @@
-import { Connection, PublicKey, type ParsedInstruction } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 
 /**
- * Browser-compatible real token monitor.
+ * Browser-compatible Raydium SIGNAL-ONLY monitor.
  *
- * This mirrors sniper/monitor.ts (the CLI version) but is adapted for the
- * Next.js app: no `.js` ESM import suffixes (bundler moduleResolution), and
- * the RPC URL is passed in so the dashboard can configure devnet/mainnet.
+ * This mirrors sniper/monitor.ts (the CLI signal-only version) but is adapted
+ * for the Next.js app: no `.js` ESM import suffixes (bundler moduleResolution),
+ * and the RPC URL is passed in so the dashboard can configure devnet/mainnet.
  *
- * It subscribes to Raydium AMM v4 logs, detects `initialize2` (new pool
- * creation), fetches + decodes the parsed transaction to extract the real
- * base mint + pool address, then runs on-chain safety checks (mint authority,
- * freeze authority, liquidity). Safe tokens are emitted to the callback.
+ * IMPORTANT: This monitor only reports transaction signatures that appear
+ * related to Raydium initialization. It intentionally does NOT guess account
+ * indexes, mint addresses, vault addresses, or liquidity. A signal must never
+ * trigger a purchase directly — it must first be decoded by a proper Raydium
+ * decoder, passed to validateDecodedRaydiumPool(), then acceptPoolForTrading().
+ *
+ * The dashboard's simulated pool feed (makePool/spawnPool in sniper-store.ts)
+ * is separate and clearly labeled as simulation.
  */
 
 export const RAYDIUM_AMM_V4 = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
 
-export interface SafeToken {
-  mint: string;
-  poolAddress: string;
-  liquiditySol: number;
-  isSafe: boolean;
-  reasons: string[];
+export interface RaydiumPoolSignal {
+  signature: string;
+  slot: number;
+  programId: string;
   detectedAt: string;
+  /** A signal is NOT a validated pool. It must never trigger a purchase. */
+  validated: false;
 }
 
 export interface RealMonitorStatus {
@@ -32,62 +36,20 @@ export interface RealMonitorStatus {
   detectedCount: number;
 }
 
-export async function checkTokenSafety(
-  connection: Connection,
-  mint: PublicKey,
-  poolAddress: PublicKey,
-  minLiquiditySol: number
-): Promise<{ isSafe: boolean; reasons: string[] }> {
-  const reasons: string[] = [];
-  try {
-    const mintInfo = await connection.getParsedAccountInfo(mint);
-    if (!mintInfo.value) {
-      return { isSafe: false, reasons: ['Mint account does not exist'] };
-    }
-    const data = mintInfo.value.data as any;
-
-    // Mirror sniper/safety.ts checkMintSafety — richer checks
-    if (data?.program && data.program !== 'spl-token' && data.program !== 'spl-token-2022') {
-      reasons.push(`Unexpected mint program: ${data.program}`);
-    }
-
-    const info = data?.parsed?.info;
-    if (!info) {
-      reasons.push('Missing parsed mint information');
-    } else {
-      if (info.mintAuthority !== null) reasons.push('Mint authority still active');
-      if (info.freezeAuthority !== null) reasons.push('Freeze authority still active');
-      if (info.isInitialized !== true) reasons.push('Mint is not initialized');
-      const decimals = Number(info.decimals);
-      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) {
-        reasons.push(`Suspicious decimals value: ${info.decimals}`);
-      }
-    }
-
-    const poolInfo = await connection.getAccountInfo(poolAddress);
-    if (poolInfo && poolInfo.lamports < minLiquiditySol * 1_000_000_000) {
-      reasons.push(`Liquidity below minimum (${minLiquiditySol} SOL)`);
-    }
-    return { isSafe: reasons.length === 0, reasons };
-  } catch {
-    return { isSafe: false, reasons: ['Failed to fetch on-chain data'] };
-  }
-}
-
 /**
- * Start a real onLogs subscription that decodes new Raydium pools.
- * Returns a stop function.
+ * Start a real onLogs subscription that reports Raydium pool-creation SIGNALS.
+ * Returns a stop function. Does NOT decode or validate — signal only.
  */
-export function startRealTokenMonitor(
+export function startRaydiumSignalMonitor(
   rpcUrl: string,
-  minLiquiditySol: number,
-  onSafeToken: (token: SafeToken) => void,
+  onSignal: (signal: RaydiumPoolSignal) => void,
   onError: (err: string) => void,
   onStatus: (patch: Partial<RealMonitorStatus>) => void
 ): () => void {
   let stopped = false;
   let subscriptionId: number | null = null;
   let detectedCount = 0;
+  const seen = new Set<string>();
 
   onStatus({ active: true, rpcUrl, error: null, detectedCount: 0, lastEventAt: null });
 
@@ -102,56 +64,42 @@ export function startRealTokenMonitor(
   try {
     subscriptionId = connection.onLogs(
       new PublicKey(RAYDIUM_AMM_V4),
-      async (logs) => {
+      async (logs, context) => {
         if (stopped || logs.err) return;
-        const isInitialize = logs.logs?.some((l) => l.includes('initialize2'));
-        if (!isInitialize) return;
+
+        // Only report signatures that appear related to initialization
+        const appearsToInitialize = logs.logs?.some((line) => {
+          const n = line.toLowerCase();
+          return n.includes('initialize2') || n.includes('initialize');
+        });
+        if (!appearsToInitialize) return;
+
+        // De-duplicate signatures
+        if (seen.has(logs.signature)) return;
+        seen.add(logs.signature);
+        // Cap memory: keep last 10,000 signatures
+        if (seen.size > 10_000) {
+          const first = seen.values().next().value;
+          if (first) seen.delete(first);
+        }
 
         onStatus({ lastEventAt: Date.now() });
 
+        const signal: RaydiumPoolSignal = {
+          signature: logs.signature,
+          slot: context.slot,
+          programId: RAYDIUM_AMM_V4,
+          detectedAt: new Date().toISOString(),
+          validated: false,
+        };
+
+        detectedCount += 1;
+        onStatus({ detectedCount, lastEventAt: Date.now() });
+
         try {
-          const tx = await connection.getParsedTransaction(logs.signature, {
-            maxSupportedTransactionVersion: 0,
-          });
-          if (!tx?.meta?.innerInstructions) return;
-
-          for (const inner of tx.meta.innerInstructions) {
-            for (const ix of inner.instructions) {
-              const parsed = ix as ParsedInstruction;
-              if (
-                parsed.programId?.toString() === RAYDIUM_AMM_V4 &&
-                parsed.parsed?.type === 'initialize2'
-              ) {
-                const info = parsed.parsed.info;
-                const baseMint = info?.baseMint;
-                const poolAddress = info?.ammAccount || info?.pool;
-                if (!baseMint || !poolAddress) continue;
-
-                const { isSafe, reasons } = await checkTokenSafety(
-                  connection,
-                  new PublicKey(baseMint),
-                  new PublicKey(poolAddress),
-                  minLiquiditySol
-                );
-
-                if (isSafe) {
-                  detectedCount += 1;
-                  onStatus({ detectedCount, lastEventAt: Date.now() });
-                  onSafeToken({
-                    mint: baseMint,
-                    poolAddress,
-                    liquiditySol: 0,
-                    isSafe: true,
-                    reasons: [],
-                    detectedAt: new Date().toISOString(),
-                  });
-                }
-              }
-            }
-          }
+          onSignal(signal);
         } catch (err) {
-          // Non-fatal: individual tx decode failures shouldn't kill the monitor
-          onError(`Decode error: ${(err as Error).message}`);
+          onError(`Signal callback error: ${(err as Error).message}`);
         }
       },
       'confirmed'

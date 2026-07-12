@@ -363,6 +363,25 @@ export const config = {
     5,
     600
   ),
+
+  minimumValidatedLiquiditySol: numberEnv(
+    'MINIMUM_VALIDATED_LIQUIDITY_SOL',
+    10,
+    0.1,
+    100_000
+  ),
+
+  maxPoolSignalAgeSeconds: numberEnv(
+    'MAX_POOL_SIGNAL_AGE_SECONDS',
+    30,
+    1,
+    600
+  ),
+
+  requireFinalizedPoolTransaction: booleanEnv(
+    'REQUIRE_FINALIZED_POOL_TRANSACTION',
+    true
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
-  startRealTokenMonitor,
-  type SafeToken,
+  startRaydiumSignalMonitor,
+  type RaydiumPoolSignal,
 } from '@/lib/real-monitor';
 
 /* ----------------------------------------------------------------------------
@@ -226,8 +226,8 @@ interface SniperState {
   sellPosition: (id: string) => void;
   tick: () => void;
   spawnPool: () => void;
-  /** Push a real (live-RPC) SafeToken into the detected pools feed. */
-  addDetectedPool: (token: SafeToken) => void;
+  /** Push a real (live-RPC) Raydium SIGNAL into the detected pools feed. */
+  addDetectedPool: (signal: RaydiumPoolSignal) => void;
   /** Start the live RPC monitor (Raydium onLogs + initialize2 decoding). */
   startRealMonitor: () => void;
   /** Stop the live RPC monitor. */
@@ -705,33 +705,33 @@ export const useSniperStore = create<SniperState>((set, get) => ({
 
   clearActivity: () => set({ activity: [] }),
 
-  addDetectedPool: (token) => {
-    // Convert a real (live-RPC) SafeToken into a DetectedPool and prepend.
+  addDetectedPool: (signal) => {
+    // A signal is NOT a validated pool — it must never trigger a purchase.
+    // It appears in the feed as "SIGNAL — not validated" with no Snipe button.
     const pool: DetectedPool = {
-      id: `live-${nextId()}`,
-      symbol: token.mint.slice(0, 6),
-      mint: token.mint.slice(0, 4) + '…' + token.mint.slice(-4),
-      liquiditySol: token.liquiditySol,
-      marketCapUsd: 0, // unknown until pool reserves fetched
+      id: `signal-${nextId()}`,
+      symbol: 'SIGNAL',
+      mint: signal.signature.slice(0, 4) + '…' + signal.signature.slice(-4),
+      liquiditySol: 0, // unknown — a signal does not guess liquidity
+      marketCapUsd: 0,
       ageSec: 0,
       change5m: 0,
-      passedFilters: token.isSafe,
-      safetyReasons: token.reasons,
-      isSafe: token.isSafe,
+      passedFilters: false, // signals are never "safe" — they need validation first
+      safetyReasons: ['Signal — not yet decoded or validated'],
+      isSafe: false,
       source: 'live',
     };
     set((s) => ({ pools: [pool, ...s.pools].slice(0, 12) }));
     get().addLog({
-      token: pool.symbol,
-      action: `🔴 LIVE: real new pool detected ${pool.symbol} (passed safety checks)`,
+      token: 'Signal',
+      action: `🔴 LIVE SIGNAL: Raydium init detected (slot ${signal.slot}) — needs validation before trading`,
       amount: '-',
-      status: 'success',
+      status: 'pending',
     });
-    // Auto-snipe real safe tokens if auto mode is on
-    const { settings } = get();
-    if (settings.autoEnabled && token.isSafe) {
-      setTimeout(() => get().snipePool(pool.id), 400);
-    }
+    // CRITICAL: signals are NOT auto-sniped. They must be decoded by a proper
+    // Raydium decoder, passed to validateDecodedRaydiumPool(), then
+    // acceptPoolForTrading() before any purchase. Auto-snipe is intentionally
+    // disabled for signals.
   },
 
   startRealMonitor: () => {
@@ -741,10 +741,9 @@ export const useSniperStore = create<SniperState>((set, get) => ({
       try { _monitorStop(); } catch { /* ignore */ }
       _monitorStop = null;
     }
-    _monitorStop = startRealTokenMonitor(
+    _monitorStop = startRaydiumSignalMonitor(
       settings.rpcUrl,
-      settings.minLiquiditySol,
-      (token) => get().addDetectedPool(token),
+      (signal) => get().addDetectedPool(signal),
       (err) => {
         set((s) => ({ realMonitor: { ...s.realMonitor, error: err } }));
       },
