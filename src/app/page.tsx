@@ -42,6 +42,7 @@ import { DetectedPools } from '@/components/sniper/detected-pools';
 import { OpenPositions } from '@/components/sniper/open-positions';
 import { Presets } from '@/components/sniper/presets';
 import { ThemeToggle } from '@/components/sniper/theme-toggle';
+import { SolPriceTicker } from '@/components/sniper/sol-price-ticker';
 
 const STATUS_VARIANT: Record<
   'success' | 'failed' | 'pending',
@@ -187,6 +188,8 @@ export default function SniperDashboard() {
                   ? 'Connect Phantom'
                   : 'Connect Wallet'}
             </Button>
+
+            <SolPriceTicker />
 
             <Badge
               variant="outline"

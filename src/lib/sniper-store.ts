@@ -213,6 +213,12 @@ interface SniperState {
   addLog: (log: Omit<ActivityLog, 'id' | 'time'>) => void;
   snipeNow: () => void;
   snipePool: (poolId: string) => void;
+  /** Fetch a real Jupiter quote server-side (enriches snipe with real price impact). */
+  fetchRealQuote: (outputMint: string) => Promise<{
+    priceImpactPct: number;
+    outAmount: string;
+    routeCount: number;
+  } | null>;
   sellPosition: (id: string) => void;
   tick: () => void;
   spawnPool: () => void;
@@ -418,6 +424,11 @@ export const useSniperStore = create<SniperState>((set, get) => ({
       ].slice(0, 50),
     }));
 
+    // Fetch a REAL Jupiter quote in parallel (USDC = always-available demo mint)
+    // to enrich the log with actual market data (price impact, output amount).
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const quotePromise = get().fetchRealQuote(USDC);
+
     setTimeout(() => {
       const success = Math.random() > 0.25;
       if (success) {
@@ -447,6 +458,21 @@ export const useSniperStore = create<SniperState>((set, get) => ({
               : a
           ),
         }));
+        // Enrich the log with real quote data once it resolves
+        quotePromise.then((q) => {
+          if (q) {
+            set((s) => ({
+              activity: s.activity.map((a) =>
+                a.id === logId
+                  ? {
+                      ...a,
+                      action: `[${mode}] Swap OK · impact ${q.priceImpactPct.toFixed(2)}% · ${q.routeCount} hops`,
+                    }
+                  : a
+              ),
+            }));
+          }
+        });
       } else {
         set((s) => ({
           activity: s.activity.map((a) =>
@@ -512,6 +538,30 @@ export const useSniperStore = create<SniperState>((set, get) => ({
         }));
       }
     }, 1200);
+  },
+
+  fetchRealQuote: async (outputMint) => {
+    const { settings } = get();
+    try {
+      const params = new URLSearchParams({
+        outputMint,
+        amountSol: String(settings.buyAmountSol),
+        slippageBps: String(settings.slippageBps),
+      });
+      const res = await fetch(`/api/quote?${params.toString()}`, {
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data || data.error) return null;
+      return {
+        priceImpactPct: Number(data.priceImpactPct) || 0,
+        outAmount: String(data.outAmount || '0'),
+        routeCount: Array.isArray(data.routePlan) ? data.routePlan.length : 0,
+      };
+    } catch {
+      return null;
+    }
   },
 
   sellPosition: (id) => {
