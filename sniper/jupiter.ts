@@ -7,6 +7,10 @@ import {
 
 import { config } from './config.js';
 
+import {
+  simulateWithSpendGuard,
+} from './transaction-guard.js';
+
 export const SOL_MINT =
   'So11111111111111111111111111111111111111112';
 
@@ -20,12 +24,25 @@ export interface JupiterQuote {
   slippageBps: number;
   priceImpactPct: string;
   routePlan: unknown[];
+  receivedAtMs: number;
   [key: string]: unknown;
 }
 
 export interface BuiltSwap {
   transaction: VersionedTransaction;
   lastValidBlockHeight?: number;
+
+  wallet: PublicKey;
+  inputMint: string;
+  outputMint: string;
+
+  quoteReceivedAtMs: number;
+
+  /*
+   * Maximum SOL the transaction is allowed to
+   * remove from the wallet.
+   */
+  expectedMaximumSpendLamports: bigint;
 }
 
 async function readJson<T>(
@@ -71,7 +88,10 @@ export async function getQuote(
     }
   );
 
-  const quote = await readJson<JupiterQuote>(response);
+  const quote =
+    await readJson<
+      Omit<JupiterQuote, 'receivedAtMs'>
+    >(response) as JupiterQuote;
 
   if (
     quote.inputMint !== inputMint ||
@@ -116,7 +136,33 @@ export async function getQuote(
     );
   }
 
+  quote.receivedAtMs = Date.now();
+
   return quote;
+}
+
+function assertQuoteFresh(
+  receivedAtMs: number
+): void {
+  const ageMilliseconds =
+    Date.now() - receivedAtMs;
+
+  const maximumAgeMilliseconds =
+    config.maxQuoteAgeSeconds *
+    1_000;
+
+  if (
+    !Number.isFinite(ageMilliseconds) ||
+    ageMilliseconds < 0 ||
+    ageMilliseconds >
+      maximumAgeMilliseconds
+  ) {
+    throw new Error(
+      `Jupiter quote expired after ${(
+        ageMilliseconds / 1_000
+      ).toFixed(1)} seconds`
+    );
+  }
 }
 
 export async function checkRoundTrip(
@@ -197,6 +243,10 @@ export async function buildSwapTransaction(
   quote: JupiterQuote,
   wallet: PublicKey
 ): Promise<BuiltSwap> {
+  assertQuoteFresh(
+    quote.receivedAtMs
+  );
+
   const response = await fetch(
     `${config.jupiterApiUrl}/swap`,
     {
@@ -250,10 +300,32 @@ export async function buildSwapTransaction(
 
   validateSigners(transaction, wallet);
 
+  const expectedMaximumSpendLamports =
+    quote.inputMint === SOL_MINT
+      ? BigInt(quote.inAmount) +
+        BigInt(
+          config.maxExtraBuyLamports
+        )
+      : BigInt(
+          config.maxExitFeeLamports
+        );
+
   return {
     transaction,
+
     lastValidBlockHeight:
       body.lastValidBlockHeight,
+
+    wallet,
+    inputMint:
+      quote.inputMint,
+    outputMint:
+      quote.outputMint,
+
+    quoteReceivedAtMs:
+      quote.receivedAtMs,
+
+    expectedMaximumSpendLamports,
   };
 }
 
@@ -265,34 +337,41 @@ export async function simulateAndSend(
   const {
     transaction,
     lastValidBlockHeight,
+    wallet,
+    quoteReceivedAtMs,
+    expectedMaximumSpendLamports,
   } = builtSwap;
 
+  assertQuoteFresh(
+    quoteReceivedAtMs
+  );
+
   if (!config.liveTrading) {
-    const simulation =
-      await connection.simulateTransaction(
+    const guard =
+      await simulateWithSpendGuard(
+        connection,
         transaction,
+        wallet,
         {
-          sigVerify: false,
+          expectedMaximumSpendLamports,
+
+          verifySignatures: false,
+
+          /*
+           * Dry-run may use an expired transaction
+           * blockhash because nothing is broadcast.
+           */
           replaceRecentBlockhash: true,
-          commitment: 'processed',
         }
       );
 
-    if (simulation.value.err) {
-      throw new Error(
-        `Dry-run simulation failed: ${JSON.stringify(
-          simulation.value.err
-        )}`
-      );
-    }
-
     console.log(
-      'DRY RUN: transaction simulation succeeded'
+      `DRY RUN: simulated SOL spend ${guard.simulatedSpendLamports} lamports`
     );
 
-    if (simulation.value.logs) {
+    if (guard.logs.length > 0) {
       console.log(
-        simulation.value.logs.join('\n')
+        guard.logs.join('\n')
       );
     }
 
@@ -305,53 +384,81 @@ export async function simulateAndSend(
     );
   }
 
-  transaction.sign([signer]);
-
-  /*
-   * Simulate the exact signed transaction that will
-   * be broadcast.
-   */
-  const simulation =
-    await connection.simulateTransaction(
-      transaction,
-      {
-        sigVerify: true,
-        commitment: 'processed',
-      }
-    );
-
-  if (simulation.value.err) {
+  if (
+    !signer.publicKey.equals(wallet)
+  ) {
     throw new Error(
-      `Signed simulation failed: ${JSON.stringify(
-        simulation.value.err
-      )}`
+      'Signer does not match the transaction wallet'
     );
   }
 
+  transaction.sign([signer]);
+
+  /*
+   * Check quote age again immediately before the
+   * signed simulation.
+   */
+  assertQuoteFresh(
+    quoteReceivedAtMs
+  );
+
+  const guard =
+    await simulateWithSpendGuard(
+      connection,
+      transaction,
+      wallet,
+      {
+        expectedMaximumSpendLamports,
+
+        /*
+         * Verify the exact signatures that will be
+         * broadcast.
+         */
+        verifySignatures: true,
+
+        /*
+         * Live simulation must use the actual
+         * transaction blockhash.
+         */
+        replaceRecentBlockhash: false,
+      }
+    );
+
+  console.log(
+    `Signed simulation passed; SOL spend ${guard.simulatedSpendLamports} lamports`
+  );
+
+  /*
+   * Minimize the delay between simulation and
+   * broadcasting.
+   */
   const signature =
     await connection.sendRawTransaction(
       transaction.serialize(),
       {
         skipPreflight: false,
         maxRetries: 3,
-        preflightCommitment: 'confirmed',
+        preflightCommitment:
+          'confirmed',
       }
     );
 
-  const confirmation = lastValidBlockHeight
-    ? await connection.confirmTransaction(
-        {
+  const confirmation =
+    lastValidBlockHeight
+      ? await connection.confirmTransaction(
+          {
+            signature,
+            blockhash:
+              transaction.message
+                .recentBlockhash,
+            lastValidBlockHeight,
+          },
+          'confirmed'
+        )
+      : await connection.confirmTransaction(
           signature,
-          blockhash:
-            transaction.message.recentBlockhash,
-          lastValidBlockHeight,
-        },
-        'confirmed'
-      )
-    : await connection.confirmTransaction(
-        signature,
-        'confirmed'
-      );
+          'confirmed'
+        );
 
   if (confirmation.value.err) {
     throw new Error(

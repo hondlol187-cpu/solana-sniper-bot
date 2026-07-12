@@ -72,6 +72,88 @@ try {
   throw new Error('WALLET_PUBLIC_KEY is invalid');
 }
 
+const configuredPublicKey =
+  process.env.WALLET_PUBLIC_KEY?.trim();
+
+if (
+  keypair &&
+  configuredPublicKey
+) {
+  let expectedPublicKey: PublicKey;
+
+  try {
+    expectedPublicKey =
+      new PublicKey(
+        configuredPublicKey
+      );
+  } catch {
+    throw new Error(
+      'WALLET_PUBLIC_KEY is invalid'
+    );
+  }
+
+  if (
+    !keypair.publicKey.equals(
+      expectedPublicKey
+    )
+  ) {
+    throw new Error(
+      [
+        'PRIVATE_KEY and WALLET_PUBLIC_KEY refer to different wallets.',
+        `Private-key wallet: ${keypair.publicKey.toBase58()}.`,
+        `Configured wallet: ${expectedPublicKey.toBase58()}.`,
+      ].join(' ')
+    );
+  }
+}
+
+function validateJupiterApiUrl(): string {
+  const raw =
+    process.env.JUPITER_API_URL?.trim() ||
+    'https://lite-api.jup.ag/swap/v1';
+
+  let url: URL;
+
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(
+      'JUPITER_API_URL is not a valid URL'
+    );
+  }
+
+  if (url.protocol !== 'https:') {
+    throw new Error(
+      'JUPITER_API_URL must use HTTPS'
+    );
+  }
+
+  const allowCustom = booleanEnv(
+    'ALLOW_CUSTOM_JUPITER_API',
+    false
+  );
+
+  const allowedHosts = new Set([
+    'lite-api.jup.ag',
+    'api.jup.ag',
+  ]);
+
+  if (
+    !allowCustom &&
+    !allowedHosts.has(url.hostname)
+  ) {
+    throw new Error(
+      [
+        `Untrusted Jupiter API host: ${url.hostname}.`,
+        'Use lite-api.jup.ag or api.jup.ag.',
+        'Set ALLOW_CUSTOM_JUPITER_API=true only if you control and trust the endpoint.',
+      ].join(' ')
+    );
+  }
+
+  return raw.replace(/\/+$/, '');
+}
+
 export const config = {
   rpcUrl: required('RPC_URL'),
   liveTrading,
@@ -155,8 +237,7 @@ export const config = {
   ),
 
   jupiterApiUrl:
-    process.env.JUPITER_API_URL?.trim() ??
-    'https://lite-api.jup.ag/swap/v1',
+    validateJupiterApiUrl(),
 
   rpcUrls: (
     process.env.RPC_URLS?.trim() ||
@@ -193,6 +274,27 @@ export const config = {
     10,
     1,
     60
+  ),
+
+  maxQuoteAgeSeconds: numberEnv(
+    'MAX_QUOTE_AGE_SECONDS',
+    20,
+    5,
+    120
+  ),
+
+  maxExtraBuyLamports: numberEnv(
+    'MAX_EXTRA_BUY_LAMPORTS',
+    5_000_000,
+    100_000,
+    50_000_000
+  ),
+
+  maxExitFeeLamports: numberEnv(
+    'MAX_EXIT_FEE_LAMPORTS',
+    5_000_000,
+    100_000,
+    50_000_000
   ),
 };
 
