@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     gateModule,
     routePolicyModule,
     approvedPolicyModule,
+    prepareCoreModule,
     executionPlanModule,
     jupiterModule,
     rpcModule,
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
     import('./candidate-gate.js'),
     import('./route-policy.js'),
     import('./approved-candidate-policy.js'),
+    import('./prepare-approved-core.js'),
     import('./execution-plan.js'),
     import('./jupiter.js'),
     import('./rpc.js'),
@@ -174,6 +176,54 @@ async function main(): Promise<void> {
         quote
       );
 
+  // Fail closed: if either assessment rejects the candidate, audit
+  // the rejection and throw BEFORE any plan file is written, BEFORE
+  // any plan ID is issued, and BEFORE any success audit is emitted.
+  // The plan directory stays clean of rejected artifacts.
+  if (
+    !routeAssessment.ok ||
+    !approvalAssessment.ok
+  ) {
+    const reasonType = !routeAssessment.ok
+      ? 'route'
+      : 'approval';
+
+    await auditModule.audit(
+      'candidate.execution.plan-rejected',
+      {
+        signature,
+        exactMint,
+        approvedPoolAddress:
+          accepted.poolAddress,
+        reasonType,
+        routeOk:
+          routeAssessment.ok,
+        routeReasons:
+          routeAssessment.reasons,
+        approvalOk:
+          approvalAssessment.ok,
+        approvalReasons:
+          approvalAssessment.reasons,
+        quoteAgeMs:
+          approvalAssessment.quoteAgeMs,
+        liquidityDropPct:
+          approvalAssessment.liquidityDropPct,
+      }
+    );
+
+    // Side-effect-free helper throws with the appropriate
+    // route-vs-approval message. Unreachable afterwards.
+    prepareCoreModule.assertPlanCanBeWritten(
+      routeAssessment,
+      approvalAssessment
+    );
+
+    // Safety net in case the helper is ever relaxed.
+    throw new Error(
+      'Approved execution plan was rejected before write'
+    );
+  }
+
   const plan =
     await executionPlanModule
       .writeApprovedExecutionPlan({
@@ -303,24 +353,6 @@ async function main(): Promise<void> {
   console.log(
     `PLAN_ID=${plan.planId}`
   );
-
-  if (!routeAssessment.ok) {
-    throw new Error(
-      [
-        'Quote route does not bind to the approved pool.',
-        ...routeAssessment.reasons,
-      ].join(' ')
-    );
-  }
-
-  if (!approvalAssessment.ok) {
-    throw new Error(
-      [
-        'Approved candidate policy checks failed.',
-        ...approvalAssessment.reasons,
-      ].join(' ')
-    );
-  }
 }
 
 main().catch((error: unknown) => {

@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   rename,
+  rm,
   writeFile,
 } from 'node:fs/promises';
 
@@ -219,6 +220,17 @@ export async function loadApprovedExecutionPlan(
   }
 
   return parsed as ApprovedExecutionPlanFile;
+}
+
+export async function deleteApprovedExecutionPlan(
+  planId: string
+): Promise<void> {
+  const path =
+    getApprovedExecutionPlanPath(planId);
+
+  await rm(path, {
+    force: true,
+  });
 }
 
 export function validateApprovedExecutionPlanAge(
