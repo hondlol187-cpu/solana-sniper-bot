@@ -184,6 +184,18 @@ async function main(): Promise<void> {
         quoteReceivedAtMs:
           quote.receivedAtMs,
 
+        walletPublicKey:
+          configModule.config
+            .walletPublicKey
+            .toBase58(),
+
+        expectedCluster:
+          configModule.config
+            .expectedCluster,
+
+        buyLamports:
+          buyLamports.toString(),
+
         approvedPoolAddress:
           candidate.approval
             .approvedPoolAddress,

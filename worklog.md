@@ -2461,3 +2461,105 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
   UI to display risk-ledger + candidate-store + audit-log + plan-file
   remains the obvious next web-side step.
+
+---
+Task ID: 27
+Agent: main (Z.ai Code)
+Task: Bind the saved execution plan to wallet + environment. Prevents a valid
+      plan from being reused under a different wallet, cluster, or buy-amount
+      config than the one it was prepared for.
+
+Work Log:
+- Synced to origin/main (HEAD = ceca142 from Task 25+26).
+- Extended ApprovedExecutionPlanPayload in sniper/execution-plan.ts with
+  3 new fields:
+    * walletPublicKey: string  (the wallet the plan was prepared for)
+    * expectedCluster: string  (mainnet-beta / devnet / testnet)
+    * buyLamports: string      (the exact buy amount in lamports)
+  These are captured at prepare time and verified at simulate time.
+- Created sniper/execution-plan-policy.ts:
+    * ExecutionPlanEnvironmentAssessment { ok, reasons[] }
+    * assessExecutionPlanEnvironment(file) checks:
+        1. payload.walletPublicKey === config.walletPublicKey.toBase58()
+        2. payload.expectedCluster === config.expectedCluster
+        3. payload.buyLamports === BigInt(config.buyAmountSol * 1e9).toString()
+        4. payload.quoteInAmount === payload.buyLamports (internal consistency)
+        5. payload.exactMint === payload.quoteOutputMint (internal consistency)
+        6. new PublicKey(payload.walletPublicKey) succeeds (valid base58)
+      Returns ok=false with reasons[] if any check fails.
+- Updated sniper/prepare-approved.ts:
+    * Usage text was already correct (verified)
+    * writeApprovedExecutionPlan payload now includes walletPublicKey,
+      expectedCluster, buyLamports (captured from configModule.config at
+      prepare time)
+- Updated sniper/simulate-approved-plan.ts (6 edits):
+    A) Added `import { PublicKey } from '@solana/web3.js'` at top level
+    B) Replaced configModule import with executionPlanPolicyModule import
+    C) After age validation, call assessExecutionPlanEnvironment(planFile)
+       and throw if !ok with all reasons
+    D) buildSwapTransaction now uses `new PublicKey(payload.walletPublicKey)`
+       instead of configModule.config.walletPublicKey — the swap is built
+       for the wallet stored in the plan, not the current env
+    E) Audit payload expanded with environmentOk + environmentReasons
+    F) Console banner expanded with `Wallet: ${payload.walletPublicKey}` and
+       `Cluster: ${payload.expectedCluster}`
+- Created tests/execution-plan-policy.test.ts (4 tests, no RPC):
+    1. accepts matching execution-plan environment (ok=true, reasons=[])
+    2. rejects wallet mismatch (plan wallet = WSOL mint, current = system
+       program -> ok=false, /wallet/)
+    3. rejects cluster mismatch (plan = devnet, current = mainnet-beta ->
+       ok=false, /cluster/)
+    4. rejects buy-amount mismatch (plan = 20000000, current = 10000000 ->
+       ok=false, /buy amount/)
+- Updated tests/execution-plan.test.ts buildPayload() to include the 3 new
+  fields (walletPublicKey, expectedCluster, buyLamports) so the existing
+  3 tests continue to typecheck against the extended payload interface.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       35 passed, 0 failed (31 existing + 4 new)
+
+Stage Summary:
+- A saved execution plan is now bound to:
+    * The wallet public key it was prepared for
+    * The cluster it was prepared on
+    * The buy amount (in lamports) it was prepared with
+- simulate-approved-plan refuses to run if the current environment does
+  not match all three. This prevents plan reuse under a different wallet,
+  a different cluster, or a different buy-size config.
+- Internal consistency checks also verify:
+    * quoteInAmount === buyLamports (the quote matches the buy amount)
+    * exactMint === quoteOutputMint (the mint matches the quote output)
+- The swap transaction is now built with `new PublicKey(payload.walletPublicKey)`
+  — the wallet from the plan, not the current config. This ensures the
+  simulation is bound to the exact wallet the plan was prepared for.
+- The audit log records environmentOk + environmentReasons so any
+  environment mismatch is auditable.
+- The console banner now shows Wallet + Cluster for at-a-glance verification.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (35 tests). CI green.
+- Eight CLIs available (unchanged from Task 25+26):
+    npm run sniper:watch                   - live signal -> decode -> validate -> queue
+    npm run sniper:candidates              - list / approve / reject queued candidates
+    npm run sniper:replay                  - replay a historical tx through the pipeline
+    npm run sniper:prepare-approved        - revalidate + quote + assess + freeze plan
+                                             (now binds wallet + cluster + buyLamports)
+    npm run sniper:simulate-approved-plan  - load plan + verify hash + verify age +
+                                             verify environment + simulate
+    npm run sniper:execute-approved        - wrapper: prepare + simulate (dry-run only)
+    npm run sniper:risk                    - status / release / reset the risk ledger
+    npm run verify                         - typecheck + lint + 35 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live approved-candidate execution is still blocked. The next major
+  batch should add a direct pool-bound executor that consumes the frozen
+  plan file end-to-end before re-enabling --live.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log + plan-file
+  remains the obvious next web-side step.

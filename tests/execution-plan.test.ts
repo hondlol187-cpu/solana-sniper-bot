@@ -50,6 +50,13 @@ function buildPayload() {
     createdAt: new Date(1_000_000).toISOString(),
     quoteReceivedAtMs: 995_000,
 
+    walletPublicKey:
+      '11111111111111111111111111111111',
+    expectedCluster:
+      'mainnet-beta',
+    buyLamports:
+      '10000000',
+
     approvedPoolAddress: 'POOL_1',
     approvedQuoteMint:
       'So11111111111111111111111111111111111111112',

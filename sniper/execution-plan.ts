@@ -16,6 +16,10 @@ export interface ApprovedExecutionPlanPayload {
   createdAt: string;
   quoteReceivedAtMs: number;
 
+  walletPublicKey: string;
+  expectedCluster: string;
+  buyLamports: string;
+
   approvedPoolAddress: string;
   approvedQuoteMint: string;
   approvedLiquiditySol: number;

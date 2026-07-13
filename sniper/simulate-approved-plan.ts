@@ -1,20 +1,22 @@
 export {};
 
+import { PublicKey } from '@solana/web3.js';
+
 async function main(): Promise<void> {
   process.env.LIVE_TRADING =
     'false';
 
   const [
     executionPlanModule,
+    executionPlanPolicyModule,
     jupiterModule,
     rpcModule,
-    configModule,
     auditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
+    import('./execution-plan-policy.js'),
     import('./jupiter.js'),
     import('./rpc.js'),
-    import('./config.js'),
     import('./audit.js'),
   ]);
 
@@ -26,6 +28,21 @@ async function main(): Promise<void> {
     .validateApprovedExecutionPlanAge(
       planFile
     );
+
+  const environmentAssessment =
+    executionPlanPolicyModule
+      .assessExecutionPlanEnvironment(
+        planFile
+      );
+
+  if (!environmentAssessment.ok) {
+    throw new Error(
+      [
+        'Approved execution plan environment checks failed.',
+        ...environmentAssessment.reasons,
+      ].join(' ')
+    );
+  }
 
   const payload =
     planFile.payload;
@@ -83,8 +100,9 @@ async function main(): Promise<void> {
     await jupiterModule
       .buildSwapTransaction(
         quote,
-        configModule.config
-          .walletPublicKey
+        new PublicKey(
+          payload.walletPublicKey
+        )
       );
 
   const result =
@@ -106,6 +124,10 @@ async function main(): Promise<void> {
         payload.approvedPoolAddress,
       planSha256:
         planFile.sha256,
+      environmentOk:
+        environmentAssessment.ok,
+      environmentReasons:
+        environmentAssessment.reasons,
       result,
     }
   );
@@ -116,6 +138,8 @@ async function main(): Promise<void> {
       `Signature: ${payload.signature}`,
       `Mint: ${payload.exactMint}`,
       `Pool: ${payload.approvedPoolAddress}`,
+      `Wallet: ${payload.walletPublicKey}`,
+      `Cluster: ${payload.expectedCluster}`,
       `PlanSha256: ${planFile.sha256}`,
       `Result: ${result}`,
       'No transaction was broadcast.',
