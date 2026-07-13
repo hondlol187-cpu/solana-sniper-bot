@@ -61,6 +61,21 @@ async function main(): Promise<void> {
   const payload =
     planFile.payload;
 
+  // Replay protection: only plans in the `prepared` state can be
+  // simulated. A plan that has already been simulated (or cancelled)
+  // is single-use by default — operators must re-prepare a fresh
+  // plan from the candidate store if they want to simulate again.
+  if (
+    planFile.state.status !== 'prepared'
+  ) {
+    throw new Error(
+      [
+        'Approved execution plan is not reusable.',
+        `Status: ${planFile.state.status}.`,
+      ].join(' ')
+    );
+  }
+
   if (!payload.routeOk) {
     throw new Error(
       [
@@ -127,6 +142,13 @@ async function main(): Promise<void> {
         builtSwap
       );
 
+  const updatedPlan =
+    await executionPlanModule
+      .markApprovedExecutionPlanSimulated(
+        planFile.planId,
+        result
+      );
+
   await auditModule.audit(
     'candidate.execution.plan-simulated',
     {
@@ -137,9 +159,15 @@ async function main(): Promise<void> {
       approvedPoolAddress:
         payload.approvedPoolAddress,
       planId:
-        planFile.planId,
+        updatedPlan.planId,
       planSha256:
-        planFile.sha256,
+        updatedPlan.sha256,
+      previousStatus:
+        planFile.state.status,
+      newStatus:
+        updatedPlan.state.status,
+      simulationCount:
+        updatedPlan.state.simulationCount,
       environmentOk:
         environmentAssessment.ok,
       environmentReasons:
@@ -156,8 +184,11 @@ async function main(): Promise<void> {
       `Pool: ${payload.approvedPoolAddress}`,
       `Wallet: ${payload.walletPublicKey}`,
       `Cluster: ${payload.expectedCluster}`,
-      `PlanId: ${planFile.planId}`,
-      `PlanSha256: ${planFile.sha256}`,
+      `PlanId: ${updatedPlan.planId}`,
+      `PlanSha256: ${updatedPlan.sha256}`,
+      `PreviousStatus: ${planFile.state.status}`,
+      `NewStatus: ${updatedPlan.state.status}`,
+      `SimulationCount: ${updatedPlan.state.simulationCount}`,
       `Result: ${result}`,
       'No transaction was broadcast.',
     ].join(' | ')

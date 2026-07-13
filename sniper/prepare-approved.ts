@@ -331,6 +331,10 @@ async function main(): Promise<void> {
       planSha256:
         plan.sha256,
       planPath,
+      planStatus:
+        plan.state.status,
+      simulationCount:
+        plan.state.simulationCount,
     }
   );
 
@@ -346,6 +350,8 @@ async function main(): Promise<void> {
       `LiquidityDropPct: ${approvalAssessment.liquidityDropPct ?? '[n/a]'}`,
       `PlanId: ${plan.planId}`,
       `PlanSha256: ${plan.sha256}`,
+      `PlanStatus: ${plan.state.status}`,
+      `SimulationCount: ${plan.state.simulationCount}`,
       `PlanPath: ${planPath}`,
     ].join(' | ')
   );

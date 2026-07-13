@@ -54,9 +54,19 @@ export interface ApprovedExecutionPlanPayload {
   liquidityDropPct: number | null;
 }
 
+export interface ApprovedExecutionPlanState {
+  status: 'prepared' | 'simulated' | 'cancelled';
+  simulationCount: number;
+  createdAt: string;
+  simulatedAt?: string;
+  lastSimulationResult?: string;
+  cancellationReason?: string;
+}
+
 export interface ApprovedExecutionPlanFile {
   version: 1;
   planId: string;
+  state: ApprovedExecutionPlanState;
   payload: ApprovedExecutionPlanPayload;
   sha256: string;
 }
@@ -89,11 +99,16 @@ function stableStringify(
     .join(',')}}`;
 }
 
-function hashPayload(
-  payload: ApprovedExecutionPlanPayload
+function hashPlanContent(
+  input: {
+    version: 1;
+    planId: string;
+    state: ApprovedExecutionPlanState;
+    payload: ApprovedExecutionPlanPayload;
+  }
 ): string {
   return createHash('sha256')
-    .update(stableStringify(payload))
+    .update(stableStringify(input))
     .digest('hex');
 }
 
@@ -139,30 +154,27 @@ async function ensurePlanDirectory(): Promise<void> {
   );
 }
 
-export async function writeApprovedExecutionPlan(
-  payload: ApprovedExecutionPlanPayload
+async function saveApprovedExecutionPlanFile(
+  file: Omit<ApprovedExecutionPlanFile, 'sha256'>
 ): Promise<ApprovedExecutionPlanFile> {
   await ensurePlanDirectory();
 
-  const planId =
-    buildPlanId(payload);
-
-  const file: ApprovedExecutionPlanFile = {
-    version: 1,
-    planId,
-    payload,
-    sha256: hashPayload(payload),
+  const complete: ApprovedExecutionPlanFile = {
+    ...file,
+    sha256: hashPlanContent(file),
   };
 
   const path =
-    getApprovedExecutionPlanPath(planId);
+    getApprovedExecutionPlanPath(
+      complete.planId
+    );
 
   const temporaryFile =
     `${path}.tmp`;
 
   await writeFile(
     temporaryFile,
-    JSON.stringify(file, null, 2),
+    JSON.stringify(complete, null, 2),
     {
       encoding: 'utf8',
       mode: 0o600,
@@ -174,7 +186,25 @@ export async function writeApprovedExecutionPlan(
     path
   );
 
-  return file;
+  return complete;
+}
+
+export async function writeApprovedExecutionPlan(
+  payload: ApprovedExecutionPlanPayload
+): Promise<ApprovedExecutionPlanFile> {
+  const planId =
+    buildPlanId(payload);
+
+  return saveApprovedExecutionPlanFile({
+    version: 1,
+    planId,
+    state: {
+      status: 'prepared',
+      simulationCount: 0,
+      createdAt: payload.createdAt,
+    },
+    payload,
+  });
 }
 
 export async function loadApprovedExecutionPlan(
@@ -194,6 +224,7 @@ export async function loadApprovedExecutionPlan(
   if (
     parsed.version !== 1 ||
     typeof parsed.planId !== 'string' ||
+    !parsed.state ||
     !parsed.payload ||
     typeof parsed.sha256 !== 'string'
   ) {
@@ -202,10 +233,15 @@ export async function loadApprovedExecutionPlan(
     );
   }
 
+  const contentToHash = {
+    version: parsed.version as 1,
+    planId: parsed.planId,
+    state: parsed.state as ApprovedExecutionPlanState,
+    payload: parsed.payload as ApprovedExecutionPlanPayload,
+  };
+
   const expectedHash =
-    hashPayload(
-      parsed.payload as ApprovedExecutionPlanPayload
-    );
+    hashPlanContent(contentToHash);
 
   if (expectedHash !== parsed.sha256) {
     throw new Error(
@@ -230,6 +266,68 @@ export async function deleteApprovedExecutionPlan(
 
   await rm(path, {
     force: true,
+  });
+}
+
+export async function markApprovedExecutionPlanSimulated(
+  planId: string,
+  result: string
+): Promise<ApprovedExecutionPlanFile> {
+  const file =
+    await loadApprovedExecutionPlan(
+      planId
+    );
+
+  if (file.state.status !== 'prepared') {
+    throw new Error(
+      `Approved execution plan is not reusable; current status is ${file.state.status}`
+    );
+  }
+
+  return saveApprovedExecutionPlanFile({
+    version: file.version,
+    planId: file.planId,
+    state: {
+      ...file.state,
+      status: 'simulated',
+      simulationCount:
+        file.state.simulationCount + 1,
+      simulatedAt:
+        new Date().toISOString(),
+      lastSimulationResult: result,
+    },
+    payload: file.payload,
+  });
+}
+
+export async function cancelApprovedExecutionPlan(
+  planId: string,
+  reason: string
+): Promise<ApprovedExecutionPlanFile> {
+  const file =
+    await loadApprovedExecutionPlan(
+      planId
+    );
+
+  const cleanReason =
+    reason.trim();
+
+  if (!cleanReason) {
+    throw new Error(
+      'Cancellation reason is required'
+    );
+  }
+
+  return saveApprovedExecutionPlanFile({
+    version: file.version,
+    planId: file.planId,
+    state: {
+      ...file.state,
+      status: 'cancelled',
+      cancellationReason:
+        cleanReason,
+    },
+    payload: file.payload,
   });
 }
 
