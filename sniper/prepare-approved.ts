@@ -34,7 +34,7 @@ async function main(): Promise<void> {
     jupiterModule,
     rpcModule,
     configModule,
-    auditModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./candidate-store.js'),
     import('./monitor.js'),
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     import('./jupiter.js'),
     import('./rpc.js'),
     import('./config.js'),
-    import('./audit.js'),
+    import('./plan-audit.js'),
   ]);
 
   const candidate =
@@ -188,14 +188,19 @@ async function main(): Promise<void> {
       ? 'route'
       : 'approval';
 
-    await auditModule.audit(
-      'candidate.execution.plan-rejected',
+    await planAuditModule.auditPlanRejected(
       {
         signature,
         exactMint,
         approvedPoolAddress:
           accepted.poolAddress,
-        reasonType,
+        walletPublicKey:
+          configModule.config.walletPublicKey.toBase58(),
+        expectedCluster:
+          configModule.config.expectedCluster,
+      },
+      reasonType,
+      {
         routeOk:
           routeAssessment.ok,
         routeReasons:
@@ -308,8 +313,8 @@ async function main(): Promise<void> {
         plan.planId
       );
 
-  await auditModule.audit(
-    'candidate.execution.plan-created',
+  await planAuditModule.auditPlanCreated(
+    plan,
     {
       signature,
       exactMint,
@@ -327,14 +332,7 @@ async function main(): Promise<void> {
         approvalAssessment.quoteAgeMs,
       liquidityDropPct:
         approvalAssessment.liquidityDropPct,
-      planId: plan.planId,
-      planSha256:
-        plan.sha256,
       planPath,
-      planStatus:
-        plan.state.status,
-      simulationCount:
-        plan.state.simulationCount,
     }
   );
 

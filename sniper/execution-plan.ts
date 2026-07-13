@@ -429,8 +429,17 @@ export async function loadApprovedExecutionPlan(
 }
 
 export async function deleteApprovedExecutionPlan(
-  planId: string
+  planId: string,
+  options: {
+    reason?: string;
+    recordTombstone?: boolean;
+  } = {}
 ): Promise<void> {
+  const {
+    reason = 'manual-delete',
+    recordTombstone = true,
+  } = options;
+
   /*
    * Lock so a concurrent simulate/cancel cannot race with
    * a delete. The lock file itself is not removed by rm().
@@ -438,6 +447,37 @@ export async function deleteApprovedExecutionPlan(
   await withFileLock(
     getApprovedExecutionPlanLockTarget(planId),
     async () => {
+      /*
+       * If tombstone recording is enabled, try to load
+       * the plan before deleting so we can preserve its
+       * final state. If load fails (corrupt, missing),
+       * skip the tombstone and just delete the file.
+       */
+      if (recordTombstone) {
+        try {
+          const file =
+            await loadApprovedExecutionPlan(
+              planId
+            );
+
+          const { recordPlanDeletion } =
+            await import(
+              './plan-audit.js'
+            );
+
+          await recordPlanDeletion(
+            file,
+            reason
+          );
+        } catch {
+          /*
+           * Plan couldn't be loaded (already gone,
+           * corrupt, etc.) — skip tombstone, just
+           * delete the file.
+           */
+        }
+      }
+
       const path =
         getApprovedExecutionPlanPath(planId);
 
@@ -865,7 +905,10 @@ export async function pruneApprovedExecutionPlans(
      */
     if (!options.dryRun) {
       await deleteApprovedExecutionPlan(
-        plan.planId
+        plan.planId,
+        {
+          reason: `pruned:${reason}`,
+        }
       );
     }
 

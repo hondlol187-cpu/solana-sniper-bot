@@ -26,10 +26,10 @@ async function main(): Promise<void> {
 
   const [
     executionPlanModule,
-    auditModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
-    import('./audit.js'),
+    import('./plan-audit.js'),
   ]);
 
   // Best-effort capture of the previous status before the
@@ -60,19 +60,10 @@ async function main(): Promise<void> {
         reason
       );
 
-  await auditModule.audit(
-    'candidate.execution.plan-cancelled',
-    {
-      planId,
-      status:
-        updated.state.status,
-      previousStatus,
-      reason,
-      planSha256:
-        updated.sha256,
-      simulationCount:
-        updated.state.simulationCount,
-    }
+  await planAuditModule.auditPlanCancelled(
+    updated,
+    previousStatus,
+    reason
   );
 
   console.log(

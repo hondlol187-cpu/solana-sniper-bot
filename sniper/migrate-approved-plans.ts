@@ -6,10 +6,10 @@ async function main(): Promise<void> {
 
   const [
     executionPlanModule,
-    auditModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
-    import('./audit.js'),
+    import('./plan-audit.js'),
   ]);
 
   const plans =
@@ -64,20 +64,13 @@ async function main(): Promise<void> {
           plan.planId
         );
 
-    await auditModule.audit(
-      'candidate.execution.plan-migrated',
-      {
-        planId: plan.planId,
-        previousVersion:
-          result.fromVersion,
-        newVersion: result.toVersion,
-        previousSha256:
-          plan.sha256,
-        newSha256:
-          reloaded.sha256,
-        status:
-          reloaded.state.status,
-      }
+    await planAuditModule.auditPlanMigrated(
+      plan.planId,
+      result.fromVersion,
+      result.toVersion,
+      plan.sha256,
+      reloaded.sha256,
+      reloaded.state.status
     );
 
     migrated++;

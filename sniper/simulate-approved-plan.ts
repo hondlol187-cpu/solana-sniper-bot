@@ -23,13 +23,13 @@ async function main(): Promise<void> {
     executionPlanPolicyModule,
     jupiterModule,
     rpcModule,
-    auditModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
     import('./execution-plan-policy.js'),
     import('./jupiter.js'),
     import('./rpc.js'),
-    import('./audit.js'),
+    import('./plan-audit.js'),
   ]);
 
   const planFile =
@@ -149,25 +149,10 @@ async function main(): Promise<void> {
         result
       );
 
-  await auditModule.audit(
-    'candidate.execution.plan-simulated',
+  await planAuditModule.auditPlanSimulated(
+    updatedPlan,
+    planFile.state.status,
     {
-      signature:
-        payload.signature,
-      exactMint:
-        payload.exactMint,
-      approvedPoolAddress:
-        payload.approvedPoolAddress,
-      planId:
-        updatedPlan.planId,
-      planSha256:
-        updatedPlan.sha256,
-      previousStatus:
-        planFile.state.status,
-      newStatus:
-        updatedPlan.state.status,
-      simulationCount:
-        updatedPlan.state.simulationCount,
       environmentOk:
         environmentAssessment.ok,
       environmentReasons:

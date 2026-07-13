@@ -62,10 +62,10 @@ async function main(): Promise<void> {
 
   const [
     executionPlanModule,
-    auditModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
-    import('./audit.js'),
+    import('./plan-audit.js'),
   ]);
 
   /*
@@ -91,15 +91,11 @@ async function main(): Promise<void> {
    */
   if (!dryRun) {
     for (const result of results) {
-      await auditModule.audit(
-        'candidate.execution.plan-pruned',
-        {
-          planId: result.planId,
-          previousStatus:
-            result.previousStatus,
-          reason: result.reason,
-          ageMs: result.ageMs,
-        }
+      await planAuditModule.auditPlanPruned(
+        result.planId,
+        result.previousStatus,
+        result.reason,
+        result.ageMs
       );
     }
   }
