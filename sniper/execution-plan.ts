@@ -553,7 +553,8 @@ export function validateApprovedExecutionPlanAge(
  * transient `*.json.lock` and `*.json.tmp` artifacts), and loads
  * each via loadApprovedExecutionPlan. Files that fail to load
  * (corrupt, in-progress write, hash mismatch) are silently skipped
- * — callers that need strict consistency should re-validate.
+ * — callers that need to see those should use
+ * scanApprovedExecutionPlans instead.
  *
  * Returns files sorted by createdAt ascending (oldest first) so
  * prune callers naturally process the oldest plans first.
@@ -561,6 +562,35 @@ export function validateApprovedExecutionPlanAge(
 export async function listApprovedExecutionPlans(): Promise<
   ApprovedExecutionPlanFile[]
 > {
+  const { valid } =
+    await scanApprovedExecutionPlans();
+
+  return valid;
+}
+
+export interface InvalidApprovedExecutionPlan {
+  planId: string;
+  path: string;
+  error: string;
+}
+
+export interface PlanScanResult {
+  valid: ApprovedExecutionPlanFile[];
+  invalid: InvalidApprovedExecutionPlan[];
+}
+
+/**
+ * Scan the plan directory and return both valid and invalid plans.
+ *
+ * Unlike listApprovedExecutionPlans, this does NOT silently skip
+ * files that fail to load — each failure is captured with its
+ * planId, path, and error message so operator CLIs can surface
+ * corrupt/tampered/partial-write files for investigation.
+ *
+ * Valid plans are sorted by createdAt ascending (oldest first).
+ * Invalid plans are sorted by planId for stable display.
+ */
+export async function scanApprovedExecutionPlans(): Promise<PlanScanResult> {
   let entries: string[];
 
   try {
@@ -568,7 +598,10 @@ export async function listApprovedExecutionPlans(): Promise<
       config.approvedExecutionPlanDir
     );
   } catch {
-    return [];
+    return {
+      valid: [],
+      invalid: [],
+    };
   }
 
   const planFiles = entries.filter(
@@ -578,7 +611,9 @@ export async function listApprovedExecutionPlans(): Promise<
       !name.endsWith('.tmp')
   );
 
-  const plans: ApprovedExecutionPlanFile[] =
+  const valid: ApprovedExecutionPlanFile[] =
+    [];
+  const invalid: InvalidApprovedExecutionPlan[] =
     [];
 
   for (const name of planFiles) {
@@ -593,17 +628,22 @@ export async function listApprovedExecutionPlans(): Promise<
           planId
         );
 
-      plans.push(file);
-    } catch {
-      /*
-       * Skip plans that fail to load — they may be
-       * mid-write, corrupt, or have a hash mismatch.
-       * The prune CLI will not touch them.
-       */
+      valid.push(file);
+    } catch (error) {
+      invalid.push({
+        planId,
+        path: getApprovedExecutionPlanPath(
+          planId
+        ),
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
     }
   }
 
-  plans.sort((a, b) => {
+  valid.sort((a, b) => {
     const aMs = Date.parse(
       a.payload.createdAt
     );
@@ -614,7 +654,11 @@ export async function listApprovedExecutionPlans(): Promise<
     return aMs - bMs;
   });
 
-  return plans;
+  invalid.sort((a, b) =>
+    a.planId.localeCompare(b.planId)
+  );
+
+  return { valid, invalid };
 }
 
 export interface PruneResult {
@@ -651,6 +695,7 @@ export async function pruneApprovedExecutionPlans(
   options: {
     nowMs?: number;
     alsoPruneFinishedAfterMs?: number;
+    dryRun?: boolean;
   } = {}
 ): Promise<PruneResult[]> {
   const nowMs =
@@ -718,9 +763,16 @@ export async function pruneApprovedExecutionPlans(
 
     if (!shouldPrune) continue;
 
-    await deleteApprovedExecutionPlan(
-      plan.planId
-    );
+    /*
+     * In dry-run mode, compute the candidate but do NOT
+     * delete. Callers (CLIs) use this to preview exactly
+     * which plans would be removed before committing.
+     */
+    if (!options.dryRun) {
+      await deleteApprovedExecutionPlan(
+        plan.planId
+      );
+    }
 
     results.push({
       planId: plan.planId,

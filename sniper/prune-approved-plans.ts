@@ -28,24 +28,6 @@ async function main(): Promise<void> {
   process.env.LIVE_TRADING =
     'false';
 
-  const [
-    executionPlanModule,
-    auditModule,
-  ] = await Promise.all([
-    import('./execution-plan.js'),
-    import('./audit.js'),
-  ]);
-
-  /*
-   * Arg parsing:
-   *   npm run sniper:prune-approved-plans
-   *   npm run sniper:prune-approved-plans -- --also-prune-finished-hours 24
-   *
-   * --dry-run: list what would be pruned without deleting
-   * --also-prune-finished-hours N: also prune simulated/cancelled
-   *   plans whose transition timestamp is older than N hours.
-   *   (Default: off — only expired prepared plans are pruned.)
-   */
   const args =
     process.argv.slice(2);
 
@@ -70,47 +52,65 @@ async function main(): Promise<void> {
       ? finishedHours * 3_600_000
       : undefined;
 
-  if (dryRun) {
-    const plans =
-      await executionPlanModule
-        .listApprovedExecutionPlans();
+  const [
+    executionPlanModule,
+    auditModule,
+  ] = await Promise.all([
+    import('./execution-plan.js'),
+    import('./audit.js'),
+  ]);
 
-    console.log(
-      `Dry run: ${plans.length} plan${plans.length === 1 ? '' : 's'} on disk.`
-    );
-
-    /*
-     * Replicate the prune decision logic for reporting
-     * without actually deleting. We call pruneApprovedExecutionPlans
-     * with a no-op delete override... but since the helper owns
-     * deletion, we instead just report what's there and what
-     * thresholds apply, then exit.
-     */
-    console.log(
-      `Prepared plans older than ${process.env.MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS ?? '30'}s will be pruned (reason: expired).`
-    );
-
-    if (
-      alsoPruneFinishedAfterMs !==
-      undefined
-    ) {
-      console.log(
-        `Simulated/cancelled plans older than ${finishedHours}h will be pruned (reason: finished).`
-      );
-    } else {
-      console.log(
-        'Simulated/cancelled plans will NOT be pruned (--also-prune-finished-hours not set).'
-      );
-    }
-
-    return;
-  }
+  /*
+   * Always scan so we can surface invalid files the
+   * prune would have skipped. In dry-run mode we do
+   * NOT delete — pruneApprovedExecutionPlans returns
+   * the exact candidates instead.
+   */
+  const { invalid } =
+    await executionPlanModule
+      .scanApprovedExecutionPlans();
 
   const results =
     await executionPlanModule
       .pruneApprovedExecutionPlans({
         alsoPruneFinishedAfterMs,
+        dryRun,
       });
+
+  if (dryRun) {
+    console.log(
+      `Dry run — would prune ${results.length} plan${results.length === 1 ? '' : 's'}:`
+    );
+
+    for (const result of results) {
+      console.log(
+        [
+          `  PlanId: ${result.planId}`,
+          `PreviousStatus: ${result.previousStatus}`,
+          `Reason: ${result.reason}`,
+          `AgeMs: ${result.ageMs}`,
+        ].join(' | ')
+      );
+    }
+
+    if (invalid.length > 0) {
+      console.log(
+        `\nSkipped ${invalid.length} invalid plan${invalid.length === 1 ? '' : 's'} (not loadable, not pruned):`
+      );
+
+      for (const inv of invalid) {
+        console.log(
+          `  ${inv.planId} | error: ${inv.error}`
+        );
+      }
+    }
+
+    console.log(
+      `\nNo files were deleted (dry run).`
+    );
+
+    return;
+  }
 
   for (const result of results) {
     await auditModule.audit(
@@ -129,23 +129,33 @@ async function main(): Promise<void> {
     console.log(
       'No plans pruned.'
     );
+  } else {
+    console.log(
+      `PRUNED ${results.length} plan${results.length === 1 ? '' : 's'}`
+    );
 
-    return;
+    for (const result of results) {
+      console.log(
+        [
+          `  PlanId: ${result.planId}`,
+          `PreviousStatus: ${result.previousStatus}`,
+          `Reason: ${result.reason}`,
+          `AgeMs: ${result.ageMs}`,
+        ].join(' | ')
+      );
+    }
   }
 
-  console.log(
-    `PRUNED ${results.length} plan${results.length === 1 ? '' : 's'}`
-  );
-
-  for (const result of results) {
+  if (invalid.length > 0) {
     console.log(
-      [
-        `  PlanId: ${result.planId}`,
-        `PreviousStatus: ${result.previousStatus}`,
-        `Reason: ${result.reason}`,
-        `AgeMs: ${result.ageMs}`,
-      ].join(' | ')
+      `\nSkipped ${invalid.length} invalid plan${invalid.length === 1 ? '' : 's'} (not loadable, not pruned):`
     );
+
+    for (const inv of invalid) {
+      console.log(
+        `  ${inv.planId} | error: ${inv.error}`
+      );
+    }
   }
 }
 

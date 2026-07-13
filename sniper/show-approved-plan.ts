@@ -4,14 +4,25 @@ async function main(): Promise<void> {
   process.env.LIVE_TRADING =
     'false';
 
-  const [planId] =
+  const args =
     process.argv.slice(2);
+
+  const jsonMode = args.includes(
+    '--json'
+  );
+
+  const positionalArgs =
+    args.filter(
+      (arg) => !arg.startsWith('--')
+    );
+
+  const [planId] = positionalArgs;
 
   if (!planId) {
     throw new Error(
       [
         'Usage:',
-        'npm run sniper:show-approved-plan -- <plan-id>',
+        'npm run sniper:show-approved-plan -- <plan-id> [--json]',
       ].join('\n')
     );
   }
@@ -24,11 +35,47 @@ async function main(): Promise<void> {
     import('./execution-plan-policy.js'),
   ]);
 
-  const file =
-    await executionPlanModule
-      .loadApprovedExecutionPlan(
-        planId
+  /*
+   * Try to load the plan. If load fails (corrupt, tampered,
+   * missing, hash mismatch), surface the explicit error rather
+   * than a generic stack trace.
+   */
+  let file;
+
+  try {
+    file =
+      await executionPlanModule
+        .loadApprovedExecutionPlan(
+          planId
+        );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    if (jsonMode) {
+      console.log(
+        JSON.stringify(
+          {
+            planId,
+            valid: false,
+            error: message,
+          },
+          null,
+          2
+        )
       );
+    } else {
+      console.error(
+        `Approved execution plan is invalid: ${message}`
+      );
+    }
+
+    process.exitCode = 1;
+
+    return;
+  }
 
   const path =
     executionPlanModule
@@ -42,14 +89,34 @@ async function main(): Promise<void> {
         file
       );
 
+  if (jsonMode) {
+    console.log(
+      JSON.stringify(
+        {
+          planId: file.planId,
+          valid: true,
+          version: file.version,
+          sha256: file.sha256,
+          path,
+          state: file.state,
+          payload: file.payload,
+          environment: {
+            ok: environmentAssessment.ok,
+            reasons:
+              environmentAssessment.reasons,
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    return;
+  }
+
   const state = file.state;
   const payload = file.payload;
 
-  /*
-   * Structured multi-section output so operators can
-   * quickly scan the full lifecycle + binding state of
-   * a single plan.
-   */
   console.log(
     '=== APPROVED EXECUTION PLAN ==='
   );
