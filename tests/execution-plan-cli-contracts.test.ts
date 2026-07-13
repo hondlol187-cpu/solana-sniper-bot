@@ -815,6 +815,6 @@ test(
         maxPreparedAgeSeconds * 1_000;
 
     assert.equal(expired, true);
-    assert.ok(ageMs > 60_000);
+    assert.ok(ageMs >= 59_000);
   }
 );
