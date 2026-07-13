@@ -480,6 +480,17 @@ export const config = {
     0,
     99
   ),
+
+  approvedExecutionPlanFile:
+    process.env.APPROVED_EXECUTION_PLAN_FILE?.trim() ||
+    './sniper-approved-execution.json',
+
+  maxApprovedExecutionPlanAgeSeconds: numberEnv(
+    'MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS',
+    30,
+    5,
+    300
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

@@ -83,3 +83,5 @@ sniper-candidates.json.lock
 sniper-risk.json
 sniper-risk.json.tmp
 sniper-risk.json.lock
+sniper-approved-execution.json
+sniper-approved-execution.json.tmp

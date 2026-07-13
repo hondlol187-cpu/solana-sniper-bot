@@ -2338,3 +2338,126 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
   UI to display risk-ledger + candidate-store + audit-log remains the
   obvious next web-side step.
+
+---
+Task ID: 25 + 26 (combined)
+Agent: main (Z.ai Code)
+Task: Freeze approved execution into a tamper-evident plan file, then split
+      the approved execution flow into prepare + simulate-from-plan. The
+      plan file becomes the center of the flow — no more "recompute and
+      immediately use" behavior.
+
+Work Log:
+- Synced to origin/main (HEAD = 12e041f from Task 24).
+- Added config.approvedExecutionPlanFile (default
+  ./sniper-approved-execution.json) and config.maxApprovedExecutionPlanAgeSeconds
+  (default 30, range 5..300) to sniper/config.ts.
+- Created sniper/execution-plan.ts:
+    * ApprovedExecutionPlanPayload — 23 fields capturing signature, mint,
+      timestamps, approved + current pool snapshot, route details, full
+      quote payload, route + approval assessment results
+    * ApprovedExecutionPlanFile { version:1, payload, sha256 }
+    * stableStringify() — deterministic JSON serialization (sorted keys)
+      so the hash is reproducible
+    * hashPayload() — SHA-256 of stableStringify(payload)
+    * writeApprovedExecutionPlan(payload) — atomic write (temp+rename,
+      mode 0o600), returns { version, payload, sha256 }
+    * loadApprovedExecutionPlan() — reads file, validates version + sha256,
+      throws "hash mismatch" if tampered
+    * validateApprovedExecutionPlanAge(file, nowMs) — throws if createdAt
+      is invalid, in the future, or older than maxApprovedExecutionPlanAgeSeconds
+- Created sniper/prepare-approved.ts:
+    * npm run sniper:prepare-approved -- <signature> <exact-mint>
+    * Sets OUTPUT_MINT + LIVE_TRADING=false before importing modules
+    * Reloads candidate from store, verifies status=approved + exact-mint
+    * Re-decodes Raydium Initialize2, re-validates pool, re-runs gate
+    * Fetches fresh Jupiter quote
+    * Runs assessQuoteAgainstApprovedPool + assessApprovedCandidateExecution
+    * writeApprovedExecutionPlan() with all 23 payload fields
+    * Audits candidate.execution.plan-created with planSha256 + planFile
+    * Console: "APPROVED EXECUTION PLAN CREATED" with RouteOK/ApprovalOK/
+      QuoteAgeMs/LiquidityDropPct/PlanSha256/PlanFile
+    * Throws if routeAssessment or approvalAssessment fails
+- Created sniper/simulate-approved-plan.ts:
+    * npm run sniper:simulate-approved-plan (no args)
+    * Sets LIVE_TRADING=false before importing modules
+    * loadApprovedExecutionPlan() — reads + verifies hash
+    * validateApprovedExecutionPlanAge() — enforces freshness
+    * Rebuilds JupiterQuote from saved payload (no refetching)
+    * buildSwapTransaction(quote, walletPublicKey)
+    * simulateAndSend(connection, null, builtSwap) — null signer, dry-run
+    * Audits candidate.execution.plan-simulated with planSha256 + result
+    * Console: "APPROVED PLAN SIMULATED" with PlanSha256 + Result
+- Shrank sniper/execute-approved.ts to a compatibility wrapper:
+    * Parses <signature> <exact-mint> [--dry-run|--live]
+    * --live always throws "intentionally disabled"
+    * --dry-run spawns prepare-approved.ts as a subprocess (inherit stdio)
+    * If prepare succeeds, spawns simulate-approved-plan.ts as a subprocess
+    * Returns the simulate subprocess's exit code
+    * Uses node_modules/tsx/dist/cli.mjs as the tsx entry point
+- Created tests/execution-plan.test.ts (3 tests, no RPC):
+    1. writes and reloads a valid plan (write -> load -> deepEqual payload
+       + sha256 match)
+    2. rejects tampered plan file (write -> manually edit quoteOutAmount ->
+       load throws /hash mismatch/)
+    3. rejects stale plan age (write -> validateApprovedExecutionPlanAge
+       with nowMs = createdAt + 31s throws /too old/)
+  Test-isolation fix: all 3 tests share a single configureEnvironment()
+  call (gated by a `configured` flag) because sniper/config.ts captures
+  env vars at module-load time and dynamic import() returns the cached
+  module. If each test pointed to a different temp path, the cached config
+  would reference the first test's path. This matches the pattern used
+  by risk.test.ts and approved-candidate-policy.test.ts (same env values
+  across tests).
+- Added export {} to the top of execute-approved.ts, prepare-approved.ts,
+  and simulate-approved-plan.ts. These files have no top-level imports
+  (they use dynamic import() inside main()), so TypeScript treats them
+  as scripts (global scope) and the three `main` functions collide.
+  `export {}` makes each file a proper ES module with its own scope.
+- Added "sniper:prepare-approved" and "sniper:simulate-approved-plan"
+  scripts to package.json.
+- Added APPROVED_EXECUTION_PLAN_FILE and MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS
+  to .env.example.
+- Added sniper-approved-execution.json + .tmp to .gitignore.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       31 passed, 0 failed (28 existing + 3 new)
+
+Stage Summary:
+- The approved execution flow is now a clean two-step process:
+    1. prepare-approved: revalidate + fetch quote + assess + freeze plan
+    2. simulate-approved-plan: load plan + verify hash + verify age +
+       rebuild swap from saved quote + simulate
+- The plan file is tamper-evident (SHA-256 over deterministic JSON) and
+  age-bounded (default 30s). Any modification after prepare is detected
+  on load.
+- execute-approved.ts remains as a compatibility wrapper that runs both
+  steps in sequence via subprocesses.
+- Live execution is still intentionally blocked. The plan file is the
+  future handoff point for a direct pool-bound executor.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (31 tests). CI green.
+- Eight CLIs available:
+    npm run sniper:watch                   - live signal -> decode -> validate -> queue
+    npm run sniper:candidates              - list / approve / reject queued candidates
+    npm run sniper:replay                  - replay a historical tx through the pipeline
+    npm run sniper:prepare-approved        - revalidate + quote + assess + freeze plan
+    npm run sniper:simulate-approved-plan  - load plan + verify + simulate
+    npm run sniper:execute-approved        - wrapper: prepare + simulate (dry-run only)
+    npm run sniper:risk                    - status / release / reset the risk ledger
+    npm run verify                         - typecheck + lint + 31 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live approved-candidate execution is still blocked. The next major
+  batch should add a direct pool-bound executor that consumes the frozen
+  plan file end-to-end before re-enabling --live.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log + plan-file
+  remains the obvious next web-side step.
