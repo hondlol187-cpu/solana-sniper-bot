@@ -174,10 +174,18 @@ test(
      * Edit the tombstone file to change a field
      * without updating the entryHash.
      */
+    const { readPlanTombstones } =
+      await import(
+        '../sniper/plan-audit.js'
+      );
+
+    const tombstones =
+      await readPlanTombstones();
+
     const tombstonePath = join(
       planDir,
       'tombstones',
-      `${planId}.json`
+      `${tombstones[0].deletionId}.json`
     );
 
     const content = JSON.parse(
@@ -226,10 +234,28 @@ test(
     /*
      * Delete the middle tombstone file.
      */
+    const { readPlanTombstones } =
+      await import(
+        '../sniper/plan-audit.js'
+      );
+
+    const tombstones =
+      await readPlanTombstones();
+
+    /*
+     * Find the tombstone for planId2.
+     */
+    const midTombstone =
+      tombstones.find(
+        (t) => t.planId === planId2
+      );
+
+    assert.ok(midTombstone);
+
     const tombstonePath = join(
       planDir,
       'tombstones',
-      `${planId2}.json`
+      `${midTombstone.deletionId}.json`
     );
 
     await rm(tombstonePath, {
@@ -275,6 +301,24 @@ test(
      * Swap the sequence numbers of the two
      * tombstone files.
      */
+    const { readPlanTombstones } =
+      await import(
+        '../sniper/plan-audit.js'
+      );
+
+    const tombstones =
+      await readPlanTombstones();
+
+    const t1 = tombstones.find(
+      (t) => t.planId === planId1
+    );
+    const t2 = tombstones.find(
+      (t) => t.planId === planId2
+    );
+
+    assert.ok(t1);
+    assert.ok(t2);
+
     const tombstoneDir = join(
       planDir,
       'tombstones'
@@ -282,12 +326,12 @@ test(
 
     const path1 = join(
       tombstoneDir,
-      `${planId1}.json`
+      `${t1.deletionId}.json`
     );
 
     const path2 = join(
       tombstoneDir,
-      `${planId2}.json`
+      `${t2.deletionId}.json`
     );
 
     const content1 = JSON.parse(
@@ -409,10 +453,24 @@ test(
      * Truncate the first tombstone file so its
      * JSON is incomplete.
      */
+    const { readPlanTombstones } =
+      await import(
+        '../sniper/plan-audit.js'
+      );
+
+    const tombstones =
+      await readPlanTombstones();
+
+    const target = tombstones.find(
+      (t) => t.planId === planId
+    );
+
+    assert.ok(target);
+
     const tombstonePath = join(
       planDir,
       'tombstones',
-      `${planId}.json`
+      `${target.deletionId}.json`
     );
 
     const content =
@@ -460,10 +518,24 @@ test(
         'sig-doc-1'
       );
 
+    const { readPlanTombstones } =
+      await import(
+        '../sniper/plan-audit.js'
+      );
+
+    const tombstones =
+      await readPlanTombstones();
+
+    const target = tombstones.find(
+      (t) => t.planId === planId
+    );
+
+    assert.ok(target);
+
     const tombstonePath = join(
       planDir,
       'tombstones',
-      `${planId}.json`
+      `${target.deletionId}.json`
     );
 
     const content = JSON.parse(

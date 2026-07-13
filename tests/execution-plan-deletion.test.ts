@@ -338,10 +338,17 @@ test(
           t.planId === file.planId
       );
 
+    /*
+     * With planInstanceId-based deletion IDs, a
+     * re-created plan is a new physical instance
+     * and gets its own tombstone. So there are
+     * now 2 tombstones for this planId — one for
+     * each instance.
+     */
     assert.equal(
       matching.length,
-      1,
-      'Should have exactly one tombstone for this plan'
+      2,
+      'Should have two tombstones — one per physical plan instance'
     );
   }
 );
@@ -371,7 +378,7 @@ test(
     await writeFile(
       path,
       JSON.stringify({
-        version: 2,
+        version: 3,
         planId,
         state: { status: 'prepared' },
         payload: {},
@@ -623,7 +630,7 @@ test(
     );
 
     /*
-     * The plan on disk should now be v2.
+     * The plan on disk should now be v3.
      */
     const reloaded =
       await loadApprovedExecutionPlan(
@@ -632,8 +639,8 @@ test(
 
     assert.equal(
       reloaded.diskVersion,
-      2,
-      'Plan should be v2 on disk after migration'
+      3,
+      'Plan should be v3 on disk after migration'
     );
   }
 );

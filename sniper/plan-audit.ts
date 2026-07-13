@@ -287,11 +287,11 @@ function getPlanTombstoneDir(): string {
 }
 
 function getPlanTombstonePath(
-  planId: string
+  deletionId: string
 ): string {
   return join(
     getPlanTombstoneDir(),
-    `${planId}.json`
+    `${deletionId}.json`
   );
 }
 
@@ -483,8 +483,12 @@ export async function recordPlanDeletionOnce(
 ): Promise<void> {
   await ensurePlanTombstoneDirectory();
 
+  const deletionId = buildDeletionId(
+    file.planInstanceId
+  );
+
   const perPlanPath =
-    getPlanTombstonePath(file.planId);
+    getPlanTombstonePath(deletionId);
 
   /*
    * Check if the per-plan tombstone already exists.
@@ -563,7 +567,7 @@ export async function recordPlanDeletionOnce(
         sequence,
         previousHash,
         deletionId: buildDeletionId(
-          file.planId
+          file.planInstanceId
         ),
         planId: file.planId,
         finalStatus: file.state.status,
@@ -818,17 +822,20 @@ async function readJournal(
 }
 
 /**
- * Generate a stable deletionId for a plan.
- * Deterministic: same planId → same deletionId.
- * This ensures retries produce the same id even if
- * the plan's sha256 has changed (which would trigger
- * a conflict check rather than a new journal).
+ * Generate a stable deletionId for a plan instance.
+ * Deterministic: same planInstanceId → same deletionId.
+ *
+ * This ensures retries for one physical plan instance reuse
+ * the same deletionId, while recreated plans (which get a
+ * new planInstanceId) receive their own deletion transaction.
  */
 function buildDeletionId(
-  planId: string
+  planInstanceId: string
 ): string {
   return createHash('sha256')
-    .update(planId)
+    .update(
+      `plan-deletion:${planInstanceId}`
+    )
     .digest('hex')
     .slice(0, 32);
 }
@@ -922,7 +929,7 @@ export async function preparePlanDeletion(
   deleteReason: string
 ): Promise<PlanDeletionJournal> {
   const deletionId = buildDeletionId(
-    file.planId
+    file.planInstanceId
   );
 
   /*
@@ -942,54 +949,39 @@ export async function preparePlanDeletion(
 
       if (existing) {
         /*
-         * If the existing journal is committed AND
-         * the planSha256 differs, the old deletion
-         * completed and this is a new plan re-created
-         * after deletion. Allow a new journal cycle
-         * by falling through to create a fresh one.
+         * With planInstanceId-based deletionIds, a recreated
+         * plan gets a new planInstanceId → new deletionId →
+         * no existing journal. So finding an existing journal
+         * means this is a retry of the same physical plan
+         * instance.
          *
-         * If the journal is pending or ledger-recorded
-         * AND the planSha256 differs, that's a real
-         * conflict — a crash happened mid-deletion and
-         * the plan changed. Fail closed.
+         * Validate: the existing journal must reference the
+         * same planSha256. A mismatch means the plan changed
+         * between deletion attempts (crash mid-transaction) —
+         * fail closed.
+         *
+         * We NEVER delete an old tombstone to begin another
+         * deletion cycle. Each physical plan instance has its
+         * own deletionId and its own tombstone.
          */
         if (
           existing.planSha256 !==
           file.sha256
         ) {
-          if (
-            existing.status !==
-            'committed'
-          ) {
-            throw new Error(
-              `Plan SHA-256 conflict in deletion journal ${deletionId}: journal has ${existing.planSha256}, plan has ${file.sha256}`
-            );
-          }
-
-          /*
-           * Old journal is committed with a different
-           * sha256 — this is a re-created plan. Remove
-           * the old per-plan tombstone so the new
-           * deletion creates a fresh one, then fall
-           * through to create a new journal.
-           */
-          await rm(
-            getPlanTombstonePath(
-              file.planId
-            ),
-            { force: true }
-          );
-        } else {
-          /*
-           * planSha256 matches — resume from the
-           * existing journal state.
-           */
-          return resumeJournal(
-            existing,
-            file,
-            deleteReason
+          throw new Error(
+            `Plan SHA-256 conflict in deletion journal ${deletionId}: journal has ${existing.planSha256}, plan has ${file.sha256}`
           );
         }
+
+        /*
+         * planSha256 matches — resume from the
+         * existing journal state.
+         */
+        return resumeJournal(
+          existing,
+          file,
+          deleteReason
+        );
       }
 
       /*
@@ -1121,7 +1113,9 @@ async function resumeJournal(
       await ensurePlanTombstoneDirectory();
 
       const perPlanPath =
-        getPlanTombstonePath(file.planId);
+        getPlanTombstonePath(
+          current.deletionId
+        );
 
       const tempPath =
         `${perPlanPath}.tmp`;

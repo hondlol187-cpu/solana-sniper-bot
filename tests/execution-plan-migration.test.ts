@@ -241,7 +241,7 @@ async function writeLegacyV1Plan(
 }
 
 test(
-  'new writes produce version 2 files',
+  'new writes produce version 3 files',
   async () => {
     await configureEnvironment();
     await cleanPlanDir();
@@ -262,7 +262,7 @@ test(
 
     assert.equal(
       written.version,
-      2
+      3
     );
 
     const loaded =
@@ -272,11 +272,11 @@ test(
 
     assert.equal(
       loaded.version,
-      2
+      3
     );
     assert.equal(
       loaded.diskVersion,
-      2
+      3
     );
   }
 );
@@ -306,12 +306,12 @@ test(
       );
 
     /*
-     * In-memory version is always 2 (normalized),
+     * In-memory version is always 3 (normalized),
      * but diskVersion reveals the file is v1 on disk.
      */
     assert.equal(
       loaded.version,
-      2
+      3
     );
     assert.equal(
       loaded.diskVersion,
@@ -372,7 +372,7 @@ test(
 
     assert.equal(result.migrated, true);
     assert.equal(result.fromVersion, 1);
-    assert.equal(result.toVersion, 2);
+    assert.equal(result.toVersion, 3);
 
     /*
      * Verify the on-disk file is now v2 by reloading.
@@ -382,8 +382,8 @@ test(
         planId
       );
 
-    assert.equal(after.version, 2);
-    assert.equal(after.diskVersion, 2);
+    assert.equal(after.version, 3);
+    assert.equal(after.diskVersion, 3);
     assert.notEqual(
       after.sha256,
       before.sha256
@@ -392,7 +392,7 @@ test(
 );
 
 test(
-  'migrating an already-v2 plan is a no-op',
+  'migrating an already-v3 plan is a no-op',
   async () => {
     await configureEnvironment();
     await cleanPlanDir();
@@ -418,8 +418,8 @@ test(
       );
 
     assert.equal(result.migrated, false);
-    assert.equal(result.fromVersion, 2);
-    assert.equal(result.toVersion, 2);
+    assert.equal(result.fromVersion, 3);
+    assert.equal(result.toVersion, 3);
 
     /*
      * No-op migration must not change the file.
@@ -554,7 +554,7 @@ test(
         created.planId
       );
 
-    assert.equal(v1Loaded.version, 2);
+    assert.equal(v1Loaded.version, 3);
     assert.equal(v1Loaded.diskVersion, 1);
     assert.equal(
       v1Loaded.state.status,
@@ -571,7 +571,7 @@ test(
 
     assert.equal(result.migrated, true);
     assert.equal(result.fromVersion, 1);
-    assert.equal(result.toVersion, 2);
+    assert.equal(result.toVersion, 3);
 
     /*
      * Reload from disk to confirm the v2 file is valid
@@ -582,8 +582,8 @@ test(
         created.planId
       );
 
-    assert.equal(reloaded.version, 2);
-    assert.equal(reloaded.diskVersion, 2);
+    assert.equal(reloaded.version, 3);
+    assert.equal(reloaded.diskVersion, 3);
     assert.equal(
       reloaded.state.status,
       'simulated'
@@ -600,7 +600,7 @@ test(
 );
 
 test(
-  'v1 plan loaded then simulated becomes v2 on disk',
+  'v1 plan loaded then simulated becomes v3 on disk',
   async () => {
     await configureEnvironment();
     await cleanPlanDir();
@@ -642,8 +642,8 @@ test(
         planId
       );
 
-    assert.equal(after.version, 2);
-    assert.equal(after.diskVersion, 2);
+    assert.equal(after.version, 3);
+    assert.equal(after.diskVersion, 3);
     assert.equal(
       after.state.status,
       'simulated'
@@ -652,7 +652,7 @@ test(
 );
 
 test(
-  'v1 plan loaded then cancelled becomes v2 on disk',
+  'v1 plan loaded then cancelled becomes v3 on disk',
   async () => {
     await configureEnvironment();
     await cleanPlanDir();
@@ -691,8 +691,8 @@ test(
         planId
       );
 
-    assert.equal(after.version, 2);
-    assert.equal(after.diskVersion, 2);
+    assert.equal(after.version, 3);
+    assert.equal(after.diskVersion, 3);
     assert.equal(
       after.state.status,
       'cancelled'
@@ -701,7 +701,7 @@ test(
 );
 
 test(
-  'v2 files stay v2 through transitions',
+  'v3 files stay v3 through transitions',
   async () => {
     await configureEnvironment();
     await cleanPlanDir();
@@ -721,8 +721,8 @@ test(
         })
       );
 
-    assert.equal(created.version, 2);
-    assert.equal(created.diskVersion, 2);
+    assert.equal(created.version, 3);
+    assert.equal(created.diskVersion, 3);
 
     await markApprovedExecutionPlanSimulated(
       created.planId,
@@ -734,8 +734,8 @@ test(
         created.planId
       );
 
-    assert.equal(after.version, 2);
-    assert.equal(after.diskVersion, 2);
+    assert.equal(after.version, 3);
+    assert.equal(after.diskVersion, 3);
   }
 );
 

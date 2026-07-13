@@ -222,7 +222,7 @@ test(
     );
     assert.equal(
       t.version,
-      2
+      3
     );
     assert.equal(
       t.walletPublicKey,
@@ -482,7 +482,7 @@ test(
     );
     assert.equal(
       lastLine.details.version,
-      2
+      3
     );
     assert.equal(
       lastLine.details.walletPublicKey,
@@ -516,7 +516,7 @@ test(
       'cancelled',
       'manual-cleanup',
       'abc123',
-      2
+      3
     );
 
     const auditContent =
@@ -555,7 +555,7 @@ test(
     );
     assert.equal(
       lastLine.details.version,
-      2
+      3
     );
   }
 );
