@@ -32,6 +32,27 @@ async function main(): Promise<void> {
     import('./audit.js'),
   ]);
 
+  // Best-effort capture of the previous status before the
+  // atomic transition. If the plan is missing or corrupt,
+  // cancelApprovedExecutionPlan will throw the real error;
+  // the audit is only emitted on success below.
+  let previousStatus = 'unknown';
+
+  try {
+    const before =
+      await executionPlanModule.loadApprovedExecutionPlan(
+        planId
+      );
+
+    previousStatus =
+      before.state.status;
+  } catch {
+    /*
+     * Swallow — cancelApprovedExecutionPlan will throw a
+     * more specific error if the plan truly doesn't exist.
+     */
+  }
+
   const updated =
     await executionPlanModule
       .cancelApprovedExecutionPlan(
@@ -45,8 +66,7 @@ async function main(): Promise<void> {
       planId,
       status:
         updated.state.status,
-      previousStatus:
-        undefined,
+      previousStatus,
       reason,
       planSha256:
         updated.sha256,
@@ -59,6 +79,7 @@ async function main(): Promise<void> {
     [
       'APPROVED PLAN CANCELLED',
       `PlanId: ${planId}`,
+      `PreviousStatus: ${previousStatus}`,
       `Status: ${updated.state.status}`,
       `Reason: ${reason}`,
       `PlanSha256: ${updated.sha256}`,

@@ -14,6 +14,10 @@ import { join } from 'node:path';
 
 import { config } from './config.js';
 
+import {
+  withFileLock,
+} from './file-lock.js';
+
 export interface ApprovedExecutionPlanPayload {
   signature: string;
   exactMint: string;
@@ -189,22 +193,50 @@ async function saveApprovedExecutionPlanFile(
   return complete;
 }
 
+/**
+ * Lock target for per-plan mutual exclusion. Locks live at
+ * `<plan-path>.lock` and are owned by sniper/file-lock.ts.
+ */
+function getApprovedExecutionPlanLockTarget(
+  planId: string
+): string {
+  return getApprovedExecutionPlanPath(planId);
+}
+
 export async function writeApprovedExecutionPlan(
   payload: ApprovedExecutionPlanPayload
 ): Promise<ApprovedExecutionPlanFile> {
   const planId =
     buildPlanId(payload);
 
-  return saveApprovedExecutionPlanFile({
-    version: 1,
-    planId,
-    state: {
-      status: 'prepared',
-      simulationCount: 0,
-      createdAt: payload.createdAt,
-    },
-    payload,
-  });
+  /*
+   * Ensure the plan directory exists BEFORE acquiring the
+   * lock, because withFileLock opens `<plan-path>.lock` and
+   * Node's `open(..., 'wx')` will fail with ENOENT if the
+   * parent directory does not yet exist.
+   */
+  await ensurePlanDirectory();
+
+  /*
+   * Lock on the final plan path so that two concurrent
+   * writes with identical payloads (same signature, mint,
+   * createdAt, wallet) cannot race on the same file. The
+   * lock file is created at `<plan-path>.lock`.
+   */
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () =>
+      saveApprovedExecutionPlanFile({
+        version: 1,
+        planId,
+        state: {
+          status: 'prepared',
+          simulationCount: 0,
+          createdAt: payload.createdAt,
+        },
+        payload,
+      })
+  );
 }
 
 export async function loadApprovedExecutionPlan(
@@ -261,54 +293,68 @@ export async function loadApprovedExecutionPlan(
 export async function deleteApprovedExecutionPlan(
   planId: string
 ): Promise<void> {
-  const path =
-    getApprovedExecutionPlanPath(planId);
+  /*
+   * Lock so a concurrent simulate/cancel cannot race with
+   * a delete. The lock file itself is not removed by rm().
+   */
+  await withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () => {
+      const path =
+        getApprovedExecutionPlanPath(planId);
 
-  await rm(path, {
-    force: true,
-  });
+      await rm(path, {
+        force: true,
+      });
+    }
+  );
 }
 
 export async function markApprovedExecutionPlanSimulated(
   planId: string,
   result: string
 ): Promise<ApprovedExecutionPlanFile> {
-  const file =
-    await loadApprovedExecutionPlan(
-      planId
-    );
+  /*
+   * Atomic load + check + write under a per-plan lock so two
+   * concurrent simulate processes cannot both pass the
+   * `status === 'prepared'` gate and double-mark the plan.
+   */
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () => {
+      const file =
+        await loadApprovedExecutionPlan(
+          planId
+        );
 
-  if (file.state.status !== 'prepared') {
-    throw new Error(
-      `Approved execution plan is not reusable; current status is ${file.state.status}`
-    );
-  }
+      if (file.state.status !== 'prepared') {
+        throw new Error(
+          `Approved execution plan is not reusable; current status is ${file.state.status}`
+        );
+      }
 
-  return saveApprovedExecutionPlanFile({
-    version: file.version,
-    planId: file.planId,
-    state: {
-      ...file.state,
-      status: 'simulated',
-      simulationCount:
-        file.state.simulationCount + 1,
-      simulatedAt:
-        new Date().toISOString(),
-      lastSimulationResult: result,
-    },
-    payload: file.payload,
-  });
+      return saveApprovedExecutionPlanFile({
+        version: file.version,
+        planId: file.planId,
+        state: {
+          ...file.state,
+          status: 'simulated',
+          simulationCount:
+            file.state.simulationCount + 1,
+          simulatedAt:
+            new Date().toISOString(),
+          lastSimulationResult: result,
+        },
+        payload: file.payload,
+      });
+    }
+  );
 }
 
 export async function cancelApprovedExecutionPlan(
   planId: string,
   reason: string
 ): Promise<ApprovedExecutionPlanFile> {
-  const file =
-    await loadApprovedExecutionPlan(
-      planId
-    );
-
   const cleanReason =
     reason.trim();
 
@@ -318,17 +364,39 @@ export async function cancelApprovedExecutionPlan(
     );
   }
 
-  return saveApprovedExecutionPlanFile({
-    version: file.version,
-    planId: file.planId,
-    state: {
-      ...file.state,
-      status: 'cancelled',
-      cancellationReason:
-        cleanReason,
-    },
-    payload: file.payload,
-  });
+  /*
+   * Atomic load + check + write under a per-plan lock. Only
+   * `prepared` plans can be cancelled — a simulated or
+   * already-cancelled plan is rejected so the lifecycle
+   * graph stays strict: prepared -> simulated | cancelled.
+   */
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () => {
+      const file =
+        await loadApprovedExecutionPlan(
+          planId
+        );
+
+      if (file.state.status !== 'prepared') {
+        throw new Error(
+          `Approved execution plan is not reusable; current status is ${file.state.status}`
+        );
+      }
+
+      return saveApprovedExecutionPlanFile({
+        version: file.version,
+        planId: file.planId,
+        state: {
+          ...file.state,
+          status: 'cancelled',
+          cancellationReason:
+            cleanReason,
+        },
+        payload: file.payload,
+      });
+    }
+  );
 }
 
 export function validateApprovedExecutionPlanAge(
