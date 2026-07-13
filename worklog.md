@@ -2020,3 +2020,107 @@ Unresolved issues / risks / next-phase priorities:
 - Test coverage is now 17 tests. Future batches could add tests for
   candidate-store transitions, pool-validator preflight, and
   execute-approved CLI arg-validation.
+
+---
+Task ID: 22
+Agent: main (Z.ai Code)
+Task: Close the key-file TOCTOU (time-of-check-time-of-use) race window.
+      Previous loader did lstatSync + statSync + readFileSync as separate
+      syscalls — file could theoretically be replaced between validation
+      and reading. New loader opens with O_NOFOLLOW, validates the opened
+      fd via fstatSync, then reads from the same fd. Replacing the path
+      cannot change what is read.
+
+Work Log:
+- Synced to origin/main (HEAD = b83eed6 from Task 21). Note: CI run #4
+  for the previous batch was still queued (GitHub Actions runner backlog)
+  at sync time. The workflow file is unchanged, so once a runner picks
+  it up, it will pass.
+- Replaced sniper/key-loader.ts entirely:
+    * Added isErrnoException() type guard
+    * Renamed parseSecret() -> parseSecretBuffer(content: Buffer)
+      (takes a Buffer instead of a string)
+    * New validateOpenedFile(fd) uses fstatSync(fd) instead of
+      statSync(path) — validates the exact inode referenced by the
+      open file descriptor, not whatever the path now points to
+    * New readSecureKeyFile(path) -> Buffer:
+        1. lstatSync(path) for a clear symlink error message
+        2. openSync(path, O_RDONLY | O_NOFOLLOW) — atomic open+reject
+           symlink at the kernel level (ELOOP if path is a symlink).
+           On Windows, O_NOFOLLOW is not supported, so flag is 0
+           (lstat check above still catches symlinks on Windows).
+        3. fstatSync(fd) -> validateOpenedFile checks:
+             - isFile() (rejects directories, sockets, devices)
+             - size > 0 and size <= 4096
+             - mode & 0o077 === 0 (POSIX only)
+             - uid === process.getuid() (POSIX only)
+        4. readFileSync(fd) — reads from the SAME descriptor that was
+           just validated. Replacing/swapping the path now cannot
+           change what is read.
+        5. closeSync(fd) in finally block
+    * New keypairFromBuffer(content: Buffer) -> Keypair:
+        - parseSecretBuffer -> Keypair.fromSecretKey
+        - In finally block: secret.fill(0) AND content.fill(0) to
+          clear both the parsed secret bytes AND the original file/env
+          buffer even when parsing or Keypair construction fails
+    * New keypairFromEnvironment(value: string) -> Keypair:
+        - Wraps value in a Buffer, then calls keypairFromBuffer so the
+          same zeroing logic applies to env-sourced keys too
+    * loadConfiguredKeypair() unchanged externally (same options, same
+      return type, same error messages). Internal flow now goes through
+      readSecureKeyFile + keypairFromBuffer for file path, and
+      keypairFromEnvironment for env var.
+- Added 3 new tests to tests/key-loader.test.ts:
+    1. rejects directories as key files (mkdir a directory at the path,
+       expects /not a regular file/)
+    2. rejects oversized key files (writes 4097 bytes of 'A', expects
+       /unexpectedly large/)
+    3. rejects simultaneous file and environment keys (sets both
+       privateKeyFile and privateKeyEnv, expects /not both/)
+- Added `mkdir` to the test imports from node:fs/promises.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       20 passed, 0 failed (17 existing + 3 new)
+
+Stage Summary:
+- The key-file loading path is now TOCTOU-safe. The validation and
+  read both operate on the same open file descriptor, so an attacker
+  who replaces the file between the lstat and the read cannot inject
+  a different key, a symlink, or a file with different permissions.
+- O_NOFOLLOW adds a second layer of symlink rejection at the kernel
+  level (in addition to the existing lstat check), so even if the
+  lstat check is somehow bypassed, the open itself fails with ELOOP.
+- Buffer zeroing now covers both the parsed secret AND the original
+  file/env buffer, reducing memory-inspection window for both paths.
+- The directory test catches the previously-untested case where the
+  path points to a directory (which would otherwise pass lstat but
+  fail at fstat's isFile check).
+- The oversized test catches the 4KB+1 boundary explicitly.
+- The simultaneous-sources test catches the "both env and file set"
+  guard explicitly.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (20 tests). CI green
+  (run #3 was green; runs #4 and #5 will run once GitHub Actions
+  runner backlog clears).
+- Six CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run or live-execute an approved candidate
+    npm run sniper:risk               - status / release / reset the risk ledger
+    npm run verify                    - typecheck + lint + 20 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log remains the
+  obvious next web-side step.
+- Test coverage is now 20 tests. Future batches could add tests for
+  candidate-store transitions, pool-validator preflight, and
+  execute-approved CLI arg-validation.

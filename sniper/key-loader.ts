@@ -1,7 +1,10 @@
 import {
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
-  statSync,
 } from 'node:fs';
 
 import bs58 from 'bs58';
@@ -18,6 +21,15 @@ export interface KeyLoaderOptions {
 
   allowEnvironmentPrivateKey:
     boolean;
+}
+
+function isErrnoException(
+  error: unknown
+): error is NodeJS.ErrnoException {
+  return (
+    error instanceof Error &&
+    'code' in error
+  );
 }
 
 function parseJsonSecret(
@@ -61,29 +73,28 @@ function parseJsonSecret(
   return Uint8Array.from(bytes);
 }
 
-function parseSecret(
-  content: string
+function parseSecretBuffer(
+  content: Buffer
 ): Uint8Array {
-  const trimmed = content.trim();
+  const text =
+    content
+      .toString('utf8')
+      .trim();
 
-  if (!trimmed) {
+  if (!text) {
     throw new Error(
       'Private key is empty'
     );
   }
 
-  if (trimmed.startsWith('[')) {
-    return parseJsonSecret(
-      trimmed
-    );
+  if (text.startsWith('[')) {
+    return parseJsonSecret(text);
   }
 
   let decoded: Uint8Array;
 
   try {
-    decoded = bs58.decode(
-      trimmed
-    );
+    decoded = bs58.decode(text);
   } catch {
     throw new Error(
       'Private key is not valid base58 or JSON'
@@ -91,29 +102,24 @@ function parseSecret(
   }
 
   if (decoded.length !== 64) {
+    const receivedLength =
+      decoded.length;
+
     decoded.fill(0);
 
     throw new Error(
-      `Decoded private key has ${decoded.length} bytes; expected 64`
+      `Decoded private key has ${receivedLength} bytes; expected 64`
     );
   }
 
   return decoded;
 }
 
-function assertSecureKeyFile(
-  path: string
+function validateOpenedFile(
+  fileDescriptor: number
 ): void {
-  const linkInfo =
-    lstatSync(path);
-
-  if (linkInfo.isSymbolicLink()) {
-    throw new Error(
-      'PRIVATE_KEY_FILE must not be a symbolic link'
-    );
-  }
-
-  const info = statSync(path);
+  const info =
+    fstatSync(fileDescriptor);
 
   if (!info.isFile()) {
     throw new Error(
@@ -133,9 +139,6 @@ function assertSecureKeyFile(
     );
   }
 
-  /*
-   * Skip POSIX permission checks only on Windows.
-   */
   if (process.platform !== 'win32') {
     const exposedPermissions =
       info.mode & 0o077;
@@ -144,7 +147,7 @@ function assertSecureKeyFile(
       throw new Error(
         [
           'PRIVATE_KEY_FILE permissions are too open.',
-          'Run: chmod 600 <private-key-file>',
+          'Run chmod 600 on the private-key file.',
         ].join(' ')
       );
     }
@@ -161,27 +164,117 @@ function assertSecureKeyFile(
   }
 }
 
-function keypairFromContent(
-  content: string
-): Keypair {
-  const secret =
-    parseSecret(content);
+function readSecureKeyFile(
+  path: string
+): Buffer {
+  /*
+   * Keep the explicit lstat check for a clear error
+   * message. O_NOFOLLOW below provides the actual
+   * race-resistant protection.
+   */
+  const pathInfo = lstatSync(path);
+
+  if (pathInfo.isSymbolicLink()) {
+    throw new Error(
+      'PRIVATE_KEY_FILE must not be a symbolic link'
+    );
+  }
+
+  const noFollowFlag =
+    process.platform === 'win32'
+      ? 0
+      : constants.O_NOFOLLOW;
+
+  let fileDescriptor: number;
 
   try {
+    fileDescriptor = openSync(
+      path,
+      constants.O_RDONLY |
+        noFollowFlag
+    );
+  } catch (error) {
+    if (
+      isErrnoException(error) &&
+      error.code === 'ELOOP'
+    ) {
+      throw new Error(
+        'PRIVATE_KEY_FILE must not be a symbolic link'
+      );
+    }
+
+    throw error;
+  }
+
+  try {
+    /*
+     * Validate the exact object represented by this
+     * descriptor, then read from the same descriptor.
+     * Replacing the path cannot change what is read.
+     */
+    validateOpenedFile(
+      fileDescriptor
+    );
+
+    const content =
+      readFileSync(fileDescriptor);
+
+    if (!Buffer.isBuffer(content)) {
+      throw new Error(
+        'PRIVATE_KEY_FILE did not return binary content'
+      );
+    }
+
+    return content;
+  } finally {
+    closeSync(fileDescriptor);
+  }
+}
+
+function keypairFromBuffer(
+  content: Buffer
+): Keypair {
+  let secret:
+    | Uint8Array
+    | undefined;
+
+  try {
+    secret =
+      parseSecretBuffer(content);
+
     return Keypair.fromSecretKey(
       secret
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+
     throw new Error(
       'Private key could not create a Solana keypair'
     );
   } finally {
+    if (secret) {
+      secret.fill(0);
+    }
+
     /*
-     * Reduce the time raw secret bytes remain in
-     * application-controlled memory.
+     * Clear the file/environment byte buffer even
+     * when parsing or Keypair construction fails.
      */
-    secret.fill(0);
+    content.fill(0);
   }
+}
+
+function keypairFromEnvironment(
+  value: string
+): Keypair {
+  const buffer = Buffer.from(
+    value,
+    'utf8'
+  );
+
+  return keypairFromBuffer(buffer);
 }
 
 export function loadConfiguredKeypair(
@@ -203,18 +296,12 @@ export function loadConfiguredKeypair(
   }
 
   if (privateKeyFile) {
-    assertSecureKeyFile(
-      privateKeyFile
-    );
+    const content =
+      readSecureKeyFile(
+        privateKeyFile
+      );
 
-    const content = readFileSync(
-      privateKeyFile,
-      {
-        encoding: 'utf8',
-      }
-    );
-
-    return keypairFromContent(
+    return keypairFromBuffer(
       content
     );
   }
@@ -233,7 +320,7 @@ export function loadConfiguredKeypair(
       );
     }
 
-    return keypairFromContent(
+    return keypairFromEnvironment(
       privateKeyEnv
     );
   }

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   chmod,
+  mkdir,
   mkdtemp,
   symlink,
   unlink,
@@ -262,6 +263,116 @@ test(
     assert.equal(
       result,
       null
+    );
+  }
+);
+
+test(
+  'rejects directories as key files',
+  async () => {
+    const directory =
+      await temporaryDirectory();
+
+    const nestedDirectory =
+      join(
+        directory,
+        'not-a-key'
+      );
+
+    await mkdir(
+      nestedDirectory,
+      {
+        mode: 0o700,
+      }
+    );
+
+    assert.throws(
+      () =>
+        loadConfiguredKeypair({
+          liveTrading: true,
+          privateKeyFile:
+            nestedDirectory,
+          allowEnvironmentPrivateKey:
+            false,
+        }),
+      /not a regular file/
+    );
+  }
+);
+
+test(
+  'rejects oversized key files',
+  async () => {
+    const directory =
+      await temporaryDirectory();
+
+    const path = join(
+      directory,
+      'oversized.key'
+    );
+
+    await writeFile(
+      path,
+      Buffer.alloc(
+        4_097,
+        65
+      ),
+      {
+        mode: 0o600,
+      }
+    );
+
+    assert.throws(
+      () =>
+        loadConfiguredKeypair({
+          liveTrading: true,
+          privateKeyFile: path,
+          allowEnvironmentPrivateKey:
+            false,
+        }),
+      /unexpectedly large/
+    );
+  }
+);
+
+test(
+  'rejects simultaneous file and environment keys',
+  async () => {
+    const directory =
+      await temporaryDirectory();
+
+    const path = join(
+      directory,
+      'wallet.key'
+    );
+
+    const keypair =
+      Keypair.generate();
+
+    const encoded =
+      bs58.encode(
+        keypair.secretKey
+      );
+
+    await writeFile(
+      path,
+      encoded,
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+      }
+    );
+
+    assert.throws(
+      () =>
+        loadConfiguredKeypair({
+          liveTrading: true,
+          privateKeyFile: path,
+          privateKeyEnv: encoded,
+          allowEnvironmentPrivateKey:
+            true,
+        }),
+      /not both/
     );
   }
 );
