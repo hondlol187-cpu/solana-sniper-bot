@@ -39,6 +39,7 @@ async function main(): Promise<void> {
     validatorModule,
     gateModule,
     routePolicyModule,
+    approvedPolicyModule,
     jupiterModule,
     rpcModule,
     configModule,
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
     import('./pool-validator.js'),
     import('./candidate-gate.js'),
     import('./route-policy.js'),
+    import('./approved-candidate-policy.js'),
     import('./jupiter.js'),
     import('./rpc.js'),
     import('./config.js'),
@@ -167,6 +169,14 @@ async function main(): Promise<void> {
         }
       );
 
+  const approvalAssessment =
+    approvedPolicyModule
+      .assessApprovedCandidateExecution(
+        candidate,
+        accepted,
+        quote
+      );
+
   await auditModule.audit(
     'candidate.execution.route-assessed',
     {
@@ -183,9 +193,17 @@ async function main(): Promise<void> {
         assessment.labels,
       ammKeys:
         assessment.ammKeys,
-      ok: assessment.ok,
-      reasons:
+      routeOk: assessment.ok,
+      routeReasons:
         assessment.reasons,
+      approvalOk:
+        approvalAssessment.ok,
+      approvalReasons:
+        approvalAssessment.reasons,
+      quoteAgeMs:
+        approvalAssessment.quoteAgeMs,
+      liquidityDropPct:
+        approvalAssessment.liquidityDropPct,
     }
   );
 
@@ -197,6 +215,9 @@ async function main(): Promise<void> {
       `Pool: ${accepted.poolAddress}`,
       `Liquidity: ${accepted.liquiditySol} SOL`,
       `RouteOK: ${assessment.ok}`,
+      `ApprovalOK: ${approvalAssessment.ok}`,
+      `QuoteAgeMs: ${approvalAssessment.quoteAgeMs}`,
+      `LiquidityDropPct: ${approvalAssessment.liquidityDropPct ?? '[n/a]'}`,
       `RouteLabels: ${assessment.labels.join(', ') || '[none]'}`,
       `RouteAmmKeys: ${assessment.ammKeys.join(', ') || '[none]'}`,
     ].join(' | ')
@@ -207,6 +228,15 @@ async function main(): Promise<void> {
       [
         'Quote route does not bind to the approved pool.',
         ...assessment.reasons,
+      ].join(' ')
+    );
+  }
+
+  if (!approvalAssessment.ok) {
+    throw new Error(
+      [
+        'Approved candidate policy checks failed.',
+        ...approvalAssessment.reasons,
       ].join(' ')
     );
   }

@@ -2244,3 +2244,97 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
   UI to display risk-ledger + candidate-store + audit-log remains the
   obvious next web-side step.
+
+---
+Task ID: 24
+Agent: main (Z.ai Code)
+Task: Enforce quote freshness + approval snapshot invariants. The previous
+      batch added candidateExecutionQuoteMaxAgeSeconds and approval snapshots
+      but execute-approved.ts did not enforce either. This batch closes that
+      gap.
+
+Work Log:
+- Synced to origin/main (HEAD = 9adc79c from Task 23).
+- Added config.maxApprovedLiquidityDropPct (default 50, range 0..99) to
+  sniper/config.ts. Wired to MAX_APPROVED_LIQUIDITY_DROP_PCT env var.
+- Created sniper/approved-candidate-policy.ts:
+    * ApprovedCandidateAssessment { ok, reasons[], quoteAgeMs, liquidityDropPct }
+    * assessApprovedCandidateExecution(candidate, revalidatedPool, quote, nowMs)
+      checks:
+        1. candidate.approval exists (throws early if no snapshot)
+        2. approval.approvedPoolAddress === revalidatedPool.poolAddress
+        3. approval.approvedQuoteMint === revalidatedPool.quoteMint
+        4. quoteAgeMs is finite and >= 0
+        5. quoteAgeMs <= config.candidateExecutionQuoteMaxAgeSeconds * 1000
+        6. If approvedLiquiditySol > 0: compute liquidityDropPct, must be
+           <= config.maxApprovedLiquidityDropPct
+      Returns ok=false with reasons[] if any check fails.
+      Returns quoteAgeMs and liquidityDropPct in the assessment for
+      auditability.
+- Created tests/approved-candidate-policy.test.ts (4 tests, no RPC):
+    1. accepts fresh quote and acceptable liquidity drift
+       (approved=100 SOL, current=80 SOL, drop=20% <= 50%, quote age 5s
+        <= 10s -> ok=true, quoteAgeMs=5000, liquidityDropPct=20)
+    2. rejects stale quote (quote age 11s > 10s -> ok=false, /too old/)
+    3. rejects pool-address drift (approved POOL_1, revalidated POOL_2 ->
+       ok=false, /pool address/)
+    4. rejects excessive liquidity drop (approved=100, current=40,
+       drop=60% > 50% -> ok=false, /liquidity dropped too far/,
+       liquidityDropPct=60)
+- Updated sniper/execute-approved.ts (5 edits):
+    A) Usage text was already correct from Task 23 spec (no-op)
+    B) Added approvedPolicyModule to the parallel import block
+    C) After route assessment, call assessApprovedCandidateExecution(
+       candidate, accepted, quote) to get approvalAssessment
+    D) Expanded audit payload: routeOk/routeReasons/approvalOk/
+       approvalReasons/quoteAgeMs/liquidityDropPct (was ok/reasons only)
+    E) Expanded console output: ApprovalOK / QuoteAgeMs /
+       LiquidityDropPct added to the banner
+    F) After the existing route-failure throw, added a new throw if
+       approvalAssessment.ok is false: "Approved candidate policy checks
+       failed." with all reasons
+- Added MAX_APPROVED_LIQUIDITY_DROP_PCT=50 to .env.example near the
+  other candidate-execution settings.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       28 passed, 0 failed (24 existing + 4 new)
+
+Stage Summary:
+- The approved-candidate dry-run now enforces four invariants:
+    1. Route must bind to the approved pool (Task 23)
+    2. Quote must be fresh (quoteAgeMs <= candidateExecutionQuoteMaxAgeSeconds)
+    3. Pool identity must still match the approval snapshot
+       (approvedPoolAddress + approvedQuoteMint)
+    4. Liquidity must not have materially collapsed since approval
+       (liquidityDropPct <= maxApprovedLiquidityDropPct)
+- All four are audited together in candidate.execution.route-assessed
+  with routeOk/routeReasons/approvalOk/approvalReasons/quoteAgeMs/
+  liquidityDropPct.
+- Console banner now shows RouteOK / ApprovalOK / QuoteAgeMs /
+  LiquidityDropPct for at-a-glance verification.
+- --live remains intentionally blocked (Task 23 unchanged).
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (28 tests). CI green.
+- Six CLIs available (unchanged from Task 23):
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run only (live blocked) with route +
+                                        approval-snapshot attestation
+    npm run sniper:risk               - status / release / reset the risk ledger
+    npm run verify                    - typecheck + lint + 28 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live approved-candidate execution is still blocked. The next major
+  batch should add a direct pool-bound executor that uses the attested
+  quote end-to-end before re-enabling --live.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log remains the
+  obvious next web-side step.

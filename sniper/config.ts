@@ -473,6 +473,13 @@ export const config = {
     'REQUIRE_SINGLE_HOP_CANDIDATE_ROUTE',
     true
   ),
+
+  maxApprovedLiquidityDropPct: numberEnv(
+    'MAX_APPROVED_LIQUIDITY_DROP_PCT',
+    50,
+    0,
+    99
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);
