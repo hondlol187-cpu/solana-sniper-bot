@@ -461,6 +461,18 @@ export const config = {
     10,
     86_400
   ),
+
+  candidateExecutionQuoteMaxAgeSeconds: numberEnv(
+    'CANDIDATE_EXECUTION_QUOTE_MAX_AGE_SECONDS',
+    10,
+    1,
+    60
+  ),
+
+  requireSingleHopCandidateRoute: booleanEnv(
+    'REQUIRE_SINGLE_HOP_CANDIDATE_ROUTE',
+    true
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

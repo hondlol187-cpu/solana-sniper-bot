@@ -37,6 +37,10 @@ export interface CandidateRecord {
   approval?: {
     approvedAt: string;
     confirmedMint: string;
+
+    approvedPoolAddress: string;
+    approvedQuoteMint: string;
+    approvedLiquiditySol: number;
   };
 
   rejection?: {
@@ -377,6 +381,15 @@ export async function approveCandidate(
     candidate.approval = {
       approvedAt: now,
       confirmedMint,
+
+      approvedPoolAddress:
+        candidate.poolAddress,
+
+      approvedQuoteMint:
+        candidate.pool.quoteMint,
+
+      approvedLiquiditySol:
+        candidate.pool.liquiditySol,
     };
 
     await saveStoreUnsafe(store);

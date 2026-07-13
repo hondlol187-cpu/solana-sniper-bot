@@ -24,10 +24,6 @@ async function main(): Promise<void> {
     );
   }
 
-  /*
-   * Set OUTPUT_MINT before importing modules that
-   * load config.ts.
-   */
   process.env.OUTPUT_MINT =
     exactMint;
 
@@ -42,6 +38,8 @@ async function main(): Promise<void> {
     decoderModule,
     validatorModule,
     gateModule,
+    routePolicyModule,
+    jupiterModule,
     rpcModule,
     configModule,
     auditModule,
@@ -51,6 +49,8 @@ async function main(): Promise<void> {
     import('./raydium-decoder.js'),
     import('./pool-validator.js'),
     import('./candidate-gate.js'),
+    import('./route-policy.js'),
+    import('./jupiter.js'),
     import('./rpc.js'),
     import('./config.js'),
     import('./audit.js'),
@@ -87,44 +87,23 @@ async function main(): Promise<void> {
     );
   }
 
-  if (
-    mode === '--live' &&
-    !configModule.config.liveTrading
-  ) {
-    throw new Error(
-      [
-        '--live was requested but LIVE_TRADING is not true.',
-        'Live execution requires both the command flag and environment setting.',
-      ].join(' ')
-    );
-  }
-
   const rpcPool =
     new rpcModule.RpcPool();
 
   await rpcPool.initialize();
   await rpcPool.ensureCurrentHealthy();
 
-  /*
-   * Reconstruct the original signal and rerun the
-   * entire decoder and validator immediately before
-   * execution.
-   */
   const signal: import('./monitor.js').RaydiumPoolSignal = {
     signature:
       candidate.signature,
-
     slot:
       candidate.pool.slot,
-
     programId:
       monitorModule
         .RAYDIUM_AMM_V4
         .toBase58(),
-
     detectedAt:
       new Date().toISOString(),
-
     validated: false,
   };
 
@@ -159,19 +138,54 @@ async function main(): Promise<void> {
     );
   }
 
+  const buyLamports = BigInt(
+    Math.floor(
+      configModule.config
+        .buyAmountSol *
+        1_000_000_000
+    )
+  );
+
+  const quote =
+    await jupiterModule.getQuote(
+      jupiterModule.SOL_MINT,
+      exactMint,
+      buyLamports
+    );
+
+  const assessment =
+    routePolicyModule
+      .assessQuoteAgainstApprovedPool(
+        quote,
+        {
+          approvedPoolAddress:
+            accepted.poolAddress,
+          expectedBaseMint:
+            accepted.baseMint,
+          expectedQuoteMint:
+            accepted.quoteMint,
+        }
+      );
+
   await auditModule.audit(
-    'candidate.execution.requested',
+    'candidate.execution.route-assessed',
     {
       signature,
-      exactMint,
-      poolAddress:
-        accepted.poolAddress,
-      liquiditySol:
-        accepted.liquiditySol,
       mode:
         mode === '--live'
           ? 'live'
           : 'dry-run',
+      approvedPoolAddress:
+        accepted.poolAddress,
+      hopCount:
+        assessment.hopCount,
+      labels:
+        assessment.labels,
+      ammKeys:
+        assessment.ammKeys,
+      ok: assessment.ok,
+      reasons:
+        assessment.reasons,
     }
   );
 
@@ -182,45 +196,72 @@ async function main(): Promise<void> {
       `Mint: ${accepted.baseMint}`,
       `Pool: ${accepted.poolAddress}`,
       `Liquidity: ${accepted.liquiditySol} SOL`,
+      `RouteOK: ${assessment.ok}`,
+      `RouteLabels: ${assessment.labels.join(', ') || '[none]'}`,
+      `RouteAmmKeys: ${assessment.ammKeys.join(', ') || '[none]'}`,
     ].join(' | ')
   );
 
-  /*
-   * Import only after OUTPUT_MINT and LIVE_TRADING
-   * have been finalized.
-   */
-  const tradingModule =
-    await import('./index.js');
-
-  await tradingModule.run();
-
-  if (mode === '--live') {
-    await candidateStore
-      .markCandidateExecuted(
-        signature,
-        'full trade lifecycle completed'
-      );
-
-    console.log(
-      'Candidate marked EXECUTED'
-    );
-  } else {
-    await auditModule.audit(
-      'candidate.execution.dry-run.completed',
-      {
-        signature,
-        exactMint,
-      }
-    );
-
-    console.log(
+  if (!assessment.ok) {
+    throw new Error(
       [
-        'DRY RUN COMPLETED',
-        'Candidate remains APPROVED.',
-        'No transaction was broadcast.',
-      ].join(' | ')
+        'Quote route does not bind to the approved pool.',
+        ...assessment.reasons,
+      ].join(' ')
     );
   }
+
+  /*
+   * Live approved-candidate execution is still
+   * intentionally disabled. The current generic
+   * trading path does not consume the attested
+   * quote directly, so a later quote could differ.
+   */
+  if (mode === '--live') {
+    throw new Error(
+      [
+        'Live execution of approved candidates is intentionally disabled.',
+        'A future batch must add a direct pool-bound execution path that uses the attested quote and transaction inputs end-to-end.',
+        'Use --dry-run for now.',
+      ].join(' ')
+    );
+  }
+
+  const builtSwap =
+    await jupiterModule
+      .buildSwapTransaction(
+        quote,
+        configModule.config
+          .walletPublicKey
+      );
+
+  const result =
+    await jupiterModule
+      .simulateAndSend(
+        rpcPool.current(),
+        null,
+        builtSwap
+      );
+
+  await auditModule.audit(
+    'candidate.execution.dry-run.completed',
+    {
+      signature,
+      exactMint,
+      result,
+      approvedPoolAddress:
+        accepted.poolAddress,
+    }
+  );
+
+  console.log(
+    [
+      'DRY RUN COMPLETED',
+      `Result: ${result}`,
+      'Candidate remains APPROVED.',
+      'No transaction was broadcast.',
+    ].join(' | ')
+  );
 }
 
 main().catch((error: unknown) => {

@@ -2124,3 +2124,123 @@ Unresolved issues / risks / next-phase priorities:
 - Test coverage is now 20 tests. Future batches could add tests for
   candidate-store transitions, pool-validator preflight, and
   execute-approved CLI arg-validation.
+
+---
+Task ID: 23
+Agent: main (Z.ai Code)
+Task: Bind approved-candidate execution to an attested route. Assess the
+      actual Jupiter quote against the approved Raydium pool (single-hop,
+      matching ammKey, WSOL-quoted). Turn approved execution into a
+      quote-attested dry-run only. Block live approved-candidate execution
+      until a direct pool-bound executor exists.
+
+Work Log:
+- Synced to origin/main (HEAD = 07f736f from Task 22).
+- Added config.candidateExecutionQuoteMaxAgeSeconds (default 10, range
+  1..60) and config.requireSingleHopCandidateRoute (default true) to
+  sniper/config.ts. Wired to CANDIDATE_EXECUTION_QUOTE_MAX_AGE_SECONDS
+  and REQUIRE_SINGLE_HOP_CANDIDATE_ROUTE env vars.
+- Created sniper/route-policy.ts:
+    * RouteAssessment { ok, reasons[], hopCount, labels[], ammKeys[] }
+    * assessQuoteAgainstApprovedPool(quote, input) checks:
+        1. expectedQuoteMint === SOL_MINT (WSOL-quoted only)
+        2. quote.inputMint === SOL_MINT
+        3. quote.outputMint === expectedBaseMint
+        4. routePlan non-empty
+        5. Every leg has swapInfo
+        6. requireSingleHopCandidateRoute: routePlan.length === 1
+        7. Every leg label contains 'raydium' (case-insensitive)
+        8. At least one ammKey === approvedPoolAddress
+        9. First leg inputMint === SOL_MINT
+       10. Final leg outputMint === expectedBaseMint
+    * Returns ok=false with reasons[] if any check fails
+- Created tests/route-policy.test.ts (4 tests, no RPC):
+    1. accepts single-hop Raydium route with matching ammKey (ok=true,
+       reasons=[])
+    2. rejects multi-hop route when single-hop required (ok=false,
+       /single-hop/)
+    3. rejects route without ammKey (ok=false, /ammKey/)
+    4. rejects route with wrong pool ammKey (ok=false, /matches approved
+       pool/)
+- Updated sniper/candidate-store.ts:
+    * CandidateRecord.approval field expanded with approvedPoolAddress,
+      approvedQuoteMint, approvedLiquiditySol (snapshot of pool state
+      at approval time, for future execution checks)
+    * approveCandidate() now populates all 5 approval fields
+- Replaced sniper/execute-approved.ts entirely:
+    * Adds route-policy + jupiter imports
+    * After pool revalidation, fetches a fresh Jupiter quote via
+      getQuote(SOL_MINT, exactMint, buyLamports)
+    * Calls assessQuoteAgainstApprovedPool(quote, { approvedPoolAddress,
+      expectedBaseMint, expectedQuoteMint })
+    * Audits candidate.execution.route-assessed with full assessment
+      details (hopCount, labels, ammKeys, ok, reasons)
+    * Prints RouteOK / RouteLabels / RouteAmmKeys in the console banner
+    * If assessment fails: throws with all reasons
+    * If mode === '--live': ALWAYS throws "Live execution of approved
+      candidates is intentionally disabled. A future batch must add a
+      direct pool-bound execution path that uses the attested quote
+      and transaction inputs end-to-end. Use --dry-run for now."
+    * For --dry-run: builds the swap transaction via buildSwapTransaction,
+      calls simulateAndSend(connection, null, builtSwap) which takes
+      the dry-run path (config.liveTrading is false) and returns 'DRY_RUN'
+    * Audits candidate.execution.dry-run.completed
+    * No longer calls tradingModule.run() / markCandidateExecuted (live
+      is blocked, so no lifecycle completion to record)
+- Added CANDIDATE_EXECUTION_QUOTE_MAX_AGE_SECONDS and
+  REQUIRE_SINGLE_HOP_CANDIDATE_ROUTE to .env.example.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       24 passed, 0 failed (20 existing + 4 new)
+
+Stage Summary:
+- Approved-candidate execution is now quote-attested. The dry-run path:
+    1. Reload candidate from store
+    2. Re-decode the Raydium Initialize2 instruction
+    3. Re-validate the pool on-chain (vault balances, owner, etc.)
+    4. Re-run the candidate gate
+    5. Fetch a FRESH Jupiter quote for SOL -> exactMint
+    6. Assess the quote's routePlan against the approved pool:
+       - Must be single-hop
+       - Must be labeled Raydium
+       - Must have an ammKey that matches the approved pool address
+       - Must go WSOL -> exactMint
+    7. If assessment passes: build the swap transaction, simulate it
+       (dry-run, no signer, no broadcast), report the result
+    8. Candidate remains APPROVED (not marked executed)
+- Live execution is INTENTIONALLY BLOCKED. The current generic trading
+  path (index.ts run()) does not consume the attested quote directly —
+  it fetches its own quote, which could differ. A future batch must
+  add a direct pool-bound execution path that uses the attested quote
+  end-to-end before live execution can be re-enabled.
+- The approval snapshot (approvedPoolAddress, approvedQuoteMint,
+  approvedLiquiditySol) is now persisted for future execution checks.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (24 tests). CI green.
+- Six CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run only (live blocked) with route attestation
+    npm run sniper:risk               - status / release / reset the risk ledger
+    npm run verify                    - typecheck + lint + 24 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live approved-candidate execution is blocked. The next major batch
+  should add a direct pool-bound executor that:
+    * Takes the attested quote
+    * Builds the swap transaction with that exact quote
+    * Signs with the keypair from key-loader
+    * Broadcasts and confirms
+    * Marks the candidate executed
+  Only then can the --live block be removed.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log remains the
+  obvious next web-side step.
