@@ -23,6 +23,9 @@
     "sniper:prepare-approved": "tsx sniper/prepare-approved.ts",
     "sniper:simulate-approved-plan": "tsx sniper/simulate-approved-plan.ts",
     "sniper:cancel-approved-plan": "tsx sniper/cancel-approved-plan.ts",
+    "sniper:list-approved-plans": "tsx sniper/list-approved-plans.ts",
+    "sniper:show-approved-plan": "tsx sniper/show-approved-plan.ts",
+    "sniper:prune-approved-plans": "tsx sniper/prune-approved-plans.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

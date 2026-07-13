@@ -4,6 +4,7 @@ import {
 
 import {
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -63,6 +64,7 @@ export interface ApprovedExecutionPlanState {
   simulationCount: number;
   createdAt: string;
   simulatedAt?: string;
+  cancelledAt?: string;
   lastSimulationResult?: string;
   cancellationReason?: string;
 }
@@ -390,6 +392,8 @@ export async function cancelApprovedExecutionPlan(
         state: {
           ...file.state,
           status: 'cancelled',
+          cancelledAt:
+            new Date().toISOString(),
           cancellationReason:
             cleanReason,
         },
@@ -435,4 +439,191 @@ export function validateApprovedExecutionPlanAge(
       ].join(' ')
     );
   }
+}
+
+/**
+ * Enumerate all approved execution plan files on disk.
+ *
+ * Reads the plan directory, filters for `*.json` files (excluding
+ * transient `*.json.lock` and `*.json.tmp` artifacts), and loads
+ * each via loadApprovedExecutionPlan. Files that fail to load
+ * (corrupt, in-progress write, hash mismatch) are silently skipped
+ * — callers that need strict consistency should re-validate.
+ *
+ * Returns files sorted by createdAt ascending (oldest first) so
+ * prune callers naturally process the oldest plans first.
+ */
+export async function listApprovedExecutionPlans(): Promise<
+  ApprovedExecutionPlanFile[]
+> {
+  let entries: string[];
+
+  try {
+    entries = await readdir(
+      config.approvedExecutionPlanDir
+    );
+  } catch {
+    return [];
+  }
+
+  const planFiles = entries.filter(
+    (name) =>
+      name.endsWith('.json') &&
+      !name.endsWith('.lock') &&
+      !name.endsWith('.tmp')
+  );
+
+  const plans: ApprovedExecutionPlanFile[] =
+    [];
+
+  for (const name of planFiles) {
+    const planId = name.slice(
+      0,
+      -'.json'.length
+    );
+
+    try {
+      const file =
+        await loadApprovedExecutionPlan(
+          planId
+        );
+
+      plans.push(file);
+    } catch {
+      /*
+       * Skip plans that fail to load — they may be
+       * mid-write, corrupt, or have a hash mismatch.
+       * The prune CLI will not touch them.
+       */
+    }
+  }
+
+  plans.sort((a, b) => {
+    const aMs = Date.parse(
+      a.payload.createdAt
+    );
+    const bMs = Date.parse(
+      b.payload.createdAt
+    );
+
+    return aMs - bMs;
+  });
+
+  return plans;
+}
+
+export interface PruneResult {
+  planId: string;
+  previousStatus:
+    | 'prepared'
+    | 'simulated'
+    | 'cancelled';
+  reason: 'expired' | 'finished';
+  ageMs: number;
+}
+
+/**
+ * Prune approved execution plans that are expired or (optionally)
+ * finished.
+ *
+ * - `prepared` plans older than `config.maxApprovedExecutionPlanAgeSeconds`
+ *   are pruned with reason `'expired'`. This is always-on and mirrors
+ *   the validateApprovedExecutionPlanAge threshold.
+ * - `simulated` and `cancelled` plans are pruned with reason
+ *   `'finished'` only when `alsoPruneFinishedAfterMs` is provided.
+ *   The age is measured from `state.simulatedAt` / `state.cancelledAt`
+ *   respectively (falling back to `state.createdAt` if the transition
+ *   timestamp is missing).
+ *
+ * This function is side-effect-free except for file deletion — it
+ * does NOT audit. Callers (CLIs) own the audit trail so they can
+ * batch-emit `plan-pruned` events with full context.
+ *
+ * Returns the list of pruned plan results for the caller to audit
+ * and report.
+ */
+export async function pruneApprovedExecutionPlans(
+  options: {
+    nowMs?: number;
+    alsoPruneFinishedAfterMs?: number;
+  } = {}
+): Promise<PruneResult[]> {
+  const nowMs =
+    options.nowMs ?? Date.now();
+
+  const plans =
+    await listApprovedExecutionPlans();
+
+  const results: PruneResult[] = [];
+
+  const maxPreparedAgeMs =
+    config.maxApprovedExecutionPlanAgeSeconds *
+    1_000;
+
+  for (const plan of plans) {
+    const status = plan.state.status;
+
+    let shouldPrune = false;
+    let reason: PruneResult['reason'] =
+      'expired';
+    let ageMs = 0;
+
+    if (status === 'prepared') {
+      const createdAtMs = Date.parse(
+        plan.payload.createdAt
+      );
+
+      ageMs = nowMs - createdAtMs;
+
+      if (ageMs > maxPreparedAgeMs) {
+        shouldPrune = true;
+        reason = 'expired';
+      }
+    } else {
+      /*
+       * Simulated or cancelled — only prune if the caller
+       * opted in via alsoPruneFinishedAfterMs.
+       */
+      if (
+        options.alsoPruneFinishedAfterMs !==
+        undefined
+      ) {
+        const transitionAtStr =
+          status === 'simulated'
+            ? plan.state.simulatedAt
+            : plan.state.cancelledAt;
+
+        const transitionAtMs = transitionAtStr
+          ? Date.parse(transitionAtStr)
+          : Date.parse(
+              plan.state.createdAt
+            );
+
+        ageMs = nowMs - transitionAtMs;
+
+        if (
+          ageMs >
+          options.alsoPruneFinishedAfterMs
+        ) {
+          shouldPrune = true;
+          reason = 'finished';
+        }
+      }
+    }
+
+    if (!shouldPrune) continue;
+
+    await deleteApprovedExecutionPlan(
+      plan.planId
+    );
+
+    results.push({
+      planId: plan.planId,
+      previousStatus: status,
+      reason,
+      ageMs,
+    });
+  }
+
+  return results;
 }
