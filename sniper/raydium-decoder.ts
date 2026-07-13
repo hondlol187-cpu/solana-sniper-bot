@@ -133,7 +133,7 @@ function isPartiallyDecoded(
   );
 }
 
-function decodeInstruction(
+export function decodeInitialize2Instruction(
   instruction: PartiallyDecodedInstruction,
   signal: RaydiumPoolSignal
 ): DecodedRaydiumCandidate | null {
@@ -441,7 +441,7 @@ export async function decodeRaydiumInitialize2(
     }
 
     const candidate =
-      decodeInstruction(
+      decodeInitialize2Instruction(
         instruction,
         signal
       );
