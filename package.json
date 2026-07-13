@@ -26,6 +26,7 @@
     "sniper:list-approved-plans": "tsx sniper/list-approved-plans.ts",
     "sniper:show-approved-plan": "tsx sniper/show-approved-plan.ts",
     "sniper:prune-approved-plans": "tsx sniper/prune-approved-plans.ts",
+    "sniper:migrate-approved-plans": "tsx sniper/migrate-approved-plans.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

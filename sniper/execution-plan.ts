@@ -69,8 +69,33 @@ export interface ApprovedExecutionPlanState {
   cancellationReason?: string;
 }
 
-export interface ApprovedExecutionPlanFile {
+/**
+ * Legacy v1 plan file shape — written before the
+ * `cancelledAt` state field was added. v1 files are
+ * still loadable but should be migrated to v2.
+ */
+export type LegacyApprovedExecutionPlanFileV1 = {
   version: 1;
+  planId: string;
+  state: {
+    status: 'prepared' | 'simulated' | 'cancelled';
+    simulationCount: number;
+    createdAt: string;
+    simulatedAt?: string;
+    lastSimulationResult?: string;
+    cancellationReason?: string;
+  };
+  payload: ApprovedExecutionPlanPayload;
+  sha256: string;
+};
+
+/**
+ * Current plan file shape. New writes always use version 2.
+ * The on-disk version field indicates which schema the file
+ * was written with — loadApprovedExecutionPlan accepts both.
+ */
+export interface ApprovedExecutionPlanFile {
+  version: 1 | 2;
   planId: string;
   state: ApprovedExecutionPlanState;
   payload: ApprovedExecutionPlanPayload;
@@ -107,7 +132,7 @@ function stableStringify(
 
 function hashPlanContent(
   input: {
-    version: 1;
+    version: 1 | 2;
     planId: string;
     state: ApprovedExecutionPlanState;
     payload: ApprovedExecutionPlanPayload;
@@ -116,6 +141,43 @@ function hashPlanContent(
   return createHash('sha256')
     .update(stableStringify(input))
     .digest('hex');
+}
+
+/** Version-specific hash wrappers for explicit migration logic. */
+function hashV1PlanContent(
+  input: Omit<LegacyApprovedExecutionPlanFileV1, 'sha256'>
+): string {
+  return hashPlanContent(input);
+}
+
+function hashV2PlanContent(
+  input: {
+    version: 2;
+    planId: string;
+    state: ApprovedExecutionPlanState;
+    payload: ApprovedExecutionPlanPayload;
+  }
+): string {
+  return hashPlanContent(input);
+}
+
+/**
+ * Normalize a parsed file (v1 or v2) into the current
+ * in-memory shape. The version and sha256 are preserved
+ * so callers can inspect the on-disk version. The state
+ * is guaranteed to satisfy ApprovedExecutionPlanState
+ * (v1 states are a subset — cancelledAt is simply absent).
+ */
+function normalizePlanFile(
+  parsed: LegacyApprovedExecutionPlanFileV1 | ApprovedExecutionPlanFile
+): ApprovedExecutionPlanFile {
+  return {
+    version: parsed.version,
+    planId: parsed.planId,
+    state: parsed.state,
+    payload: parsed.payload,
+    sha256: parsed.sha256,
+  };
 }
 
 function buildPlanId(
@@ -229,7 +291,7 @@ export async function writeApprovedExecutionPlan(
     getApprovedExecutionPlanLockTarget(planId),
     async () =>
       saveApprovedExecutionPlanFile({
-        version: 1,
+        version: 2,
         planId,
         state: {
           status: 'prepared',
@@ -256,7 +318,8 @@ export async function loadApprovedExecutionPlan(
     JSON.parse(content) as Partial<ApprovedExecutionPlanFile>;
 
   if (
-    parsed.version !== 1 ||
+    (parsed.version !== 1 &&
+      parsed.version !== 2) ||
     typeof parsed.planId !== 'string' ||
     !parsed.state ||
     !parsed.payload ||
@@ -267,8 +330,13 @@ export async function loadApprovedExecutionPlan(
     );
   }
 
+  /*
+   * Verify the hash using the file's on-disk version.
+   * v1 and v2 hashes differ because the version field
+   * is part of the hashed content.
+   */
   const contentToHash = {
-    version: parsed.version as 1,
+    version: parsed.version as 1 | 2,
     planId: parsed.planId,
     state: parsed.state as ApprovedExecutionPlanState,
     payload: parsed.payload as ApprovedExecutionPlanPayload,
@@ -289,7 +357,11 @@ export async function loadApprovedExecutionPlan(
     );
   }
 
-  return parsed as ApprovedExecutionPlanFile;
+  return normalizePlanFile(
+    parsed as
+      | LegacyApprovedExecutionPlanFileV1
+      | ApprovedExecutionPlanFile
+  );
 }
 
 export async function deleteApprovedExecutionPlan(
@@ -400,6 +472,39 @@ export async function cancelApprovedExecutionPlan(
         payload: file.payload,
       });
     }
+  );
+}
+
+/**
+ * Migrate a plan file from v1 to v2 by re-saving it with
+ * version: 2. The v2 hash is computed over the new shape.
+ *
+ * If the plan is already v2, this is a no-op that returns
+ * the loaded file without re-writing.
+ *
+ * This is the only function that upgrades the on-disk version.
+ * Normal transitions (simulate, cancel) preserve the loaded
+ * version so operators can migrate at their own pace.
+ */
+export async function migrateApprovedExecutionPlan(
+  planId: string
+): Promise<ApprovedExecutionPlanFile> {
+  const loaded =
+    await loadApprovedExecutionPlan(planId);
+
+  if (loaded.version === 2) {
+    return loaded;
+  }
+
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () =>
+      saveApprovedExecutionPlanFile({
+        version: 2,
+        planId: loaded.planId,
+        state: loaded.state,
+        payload: loaded.payload,
+      })
   );
 }
 

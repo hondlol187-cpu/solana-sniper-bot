@@ -115,7 +115,7 @@ test(
 
     assert.equal(
       loaded.version,
-      1
+      2
     );
     assert.equal(
       loaded.planId,
