@@ -28,15 +28,39 @@ async function main(): Promise<void> {
   let skipped = 0;
 
   for (const plan of plans) {
-    if (plan.version === 2) {
+    /*
+     * diskVersion tells us what's on disk. If it's
+     * already 2, migration is a no-op.
+     */
+    if (plan.diskVersion === 2) {
       skipped++;
 
       continue;
     }
 
-    const updated =
+    const result =
       await executionPlanModule
         .migrateApprovedExecutionPlan(
+          plan.planId
+        );
+
+    if (!result.migrated) {
+      /*
+       * Race: another process migrated the plan
+       * between our list and our migrate call.
+       */
+      skipped++;
+
+      continue;
+    }
+
+    /*
+     * Reload the migrated plan to get the new sha256
+     * and state for the audit log.
+     */
+    const reloaded =
+      await executionPlanModule
+        .loadApprovedExecutionPlan(
           plan.planId
         );
 
@@ -44,14 +68,15 @@ async function main(): Promise<void> {
       'candidate.execution.plan-migrated',
       {
         planId: plan.planId,
-        previousVersion: plan.version,
-        newVersion: updated.version,
+        previousVersion:
+          result.fromVersion,
+        newVersion: result.toVersion,
         previousSha256:
           plan.sha256,
         newSha256:
-          updated.sha256,
+          reloaded.sha256,
         status:
-          updated.state.status,
+          reloaded.state.status,
       }
     );
 
@@ -61,8 +86,8 @@ async function main(): Promise<void> {
       [
         'MIGRATED',
         `PlanId: ${plan.planId}`,
-        `Version: ${plan.version} -> ${updated.version}`,
-        `Status: ${updated.state.status}`,
+        `Version: ${result.fromVersion} -> ${result.toVersion}`,
+        `Status: ${reloaded.state.status}`,
       ].join(' | ')
     );
   }

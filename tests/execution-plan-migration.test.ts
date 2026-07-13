@@ -274,6 +274,10 @@ test(
       loaded.version,
       2
     );
+    assert.equal(
+      loaded.diskVersion,
+      2
+    );
   }
 );
 
@@ -301,8 +305,16 @@ test(
         planId
       );
 
+    /*
+     * In-memory version is always 2 (normalized),
+     * but diskVersion reveals the file is v1 on disk.
+     */
     assert.equal(
       loaded.version,
+      2
+    );
+    assert.equal(
+      loaded.diskVersion,
       1
     );
     assert.equal(
@@ -348,27 +360,22 @@ test(
         planId
       );
 
-    assert.equal(before.version, 1);
+    assert.equal(before.diskVersion, 1);
 
     /*
      * Migrate.
      */
-    const migrated =
+    const result =
       await migrateApprovedExecutionPlan(
         planId
       );
 
-    assert.equal(
-      migrated.version,
-      2
-    );
-    assert.notEqual(
-      migrated.sha256,
-      before.sha256
-    );
+    assert.equal(result.migrated, true);
+    assert.equal(result.fromVersion, 1);
+    assert.equal(result.toVersion, 2);
 
     /*
-     * Verify the on-disk file is now v2.
+     * Verify the on-disk file is now v2 by reloading.
      */
     const after =
       await loadApprovedExecutionPlan(
@@ -376,9 +383,10 @@ test(
       );
 
     assert.equal(after.version, 2);
-    assert.equal(
+    assert.equal(after.diskVersion, 2);
+    assert.notEqual(
       after.sha256,
-      migrated.sha256
+      before.sha256
     );
   }
 );
@@ -392,6 +400,7 @@ test(
     const {
       writeApprovedExecutionPlan,
       migrateApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
     );
@@ -403,17 +412,25 @@ test(
         })
       );
 
-    const migrated =
+    const result =
       await migrateApprovedExecutionPlan(
         created.planId
       );
 
+    assert.equal(result.migrated, false);
+    assert.equal(result.fromVersion, 2);
+    assert.equal(result.toVersion, 2);
+
+    /*
+     * No-op migration must not change the file.
+     */
+    const reloaded =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
     assert.equal(
-      migrated.version,
-      2
-    );
-    assert.equal(
-      migrated.sha256,
+      reloaded.sha256,
       created.sha256
     );
   }
@@ -537,7 +554,8 @@ test(
         created.planId
       );
 
-    assert.equal(v1Loaded.version, 1);
+    assert.equal(v1Loaded.version, 2);
+    assert.equal(v1Loaded.diskVersion, 1);
     assert.equal(
       v1Loaded.state.status,
       'simulated'
@@ -546,27 +564,18 @@ test(
     /*
      * Migrate and verify state is preserved.
      */
-    const migrated =
+    const result =
       await migrateApprovedExecutionPlan(
         created.planId
       );
 
-    assert.equal(migrated.version, 2);
-    assert.equal(
-      migrated.state.status,
-      'simulated'
-    );
-    assert.equal(
-      migrated.state.simulationCount,
-      1
-    );
-    assert.equal(
-      migrated.state.lastSimulationResult,
-      'sim-ok'
-    );
+    assert.equal(result.migrated, true);
+    assert.equal(result.fromVersion, 1);
+    assert.equal(result.toVersion, 2);
 
     /*
-     * Reload from disk to confirm the v2 file is valid.
+     * Reload from disk to confirm the v2 file is valid
+     * and state was preserved through migration.
      */
     const reloaded =
       await loadApprovedExecutionPlan(
@@ -574,13 +583,286 @@ test(
       );
 
     assert.equal(reloaded.version, 2);
-    assert.equal(
-      reloaded.sha256,
-      migrated.sha256
-    );
+    assert.equal(reloaded.diskVersion, 2);
     assert.equal(
       reloaded.state.status,
       'simulated'
+    );
+    assert.equal(
+      reloaded.state.simulationCount,
+      1
+    );
+    assert.equal(
+      reloaded.state.lastSimulationResult,
+      'sim-ok'
+    );
+  }
+);
+
+test(
+  'v1 plan loaded then simulated becomes v2 on disk',
+  async () => {
+    await configureEnvironment();
+    await cleanPlanDir();
+
+    const {
+      markApprovedExecutionPlanSimulated,
+      loadApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const planId =
+      await writeLegacyV1Plan(
+        buildPayload({
+          signature: 'sig-v1-sim-upgrade',
+        })
+      );
+
+    /*
+     * Verify it's v1 on disk before the transition.
+     */
+    const before =
+      await loadApprovedExecutionPlan(
+        planId
+      );
+
+    assert.equal(before.diskVersion, 1);
+
+    /*
+     * Simulate — this must upgrade to v2 on disk.
+     */
+    await markApprovedExecutionPlanSimulated(
+      planId,
+      'sim-ok'
+    );
+
+    const after =
+      await loadApprovedExecutionPlan(
+        planId
+      );
+
+    assert.equal(after.version, 2);
+    assert.equal(after.diskVersion, 2);
+    assert.equal(
+      after.state.status,
+      'simulated'
+    );
+  }
+);
+
+test(
+  'v1 plan loaded then cancelled becomes v2 on disk',
+  async () => {
+    await configureEnvironment();
+    await cleanPlanDir();
+
+    const {
+      cancelApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const planId =
+      await writeLegacyV1Plan(
+        buildPayload({
+          signature: 'sig-v1-cancel-upgrade',
+        })
+      );
+
+    const before =
+      await loadApprovedExecutionPlan(
+        planId
+      );
+
+    assert.equal(before.diskVersion, 1);
+
+    /*
+     * Cancel — this must upgrade to v2 on disk.
+     */
+    await cancelApprovedExecutionPlan(
+      planId,
+      'manual cancel'
+    );
+
+    const after =
+      await loadApprovedExecutionPlan(
+        planId
+      );
+
+    assert.equal(after.version, 2);
+    assert.equal(after.diskVersion, 2);
+    assert.equal(
+      after.state.status,
+      'cancelled'
+    );
+  }
+);
+
+test(
+  'v2 files stay v2 through transitions',
+  async () => {
+    await configureEnvironment();
+    await cleanPlanDir();
+
+    const {
+      writeApprovedExecutionPlan,
+      markApprovedExecutionPlanSimulated,
+      loadApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          signature: 'sig-v2-stays-v2',
+        })
+      );
+
+    assert.equal(created.version, 2);
+    assert.equal(created.diskVersion, 2);
+
+    await markApprovedExecutionPlanSimulated(
+      created.planId,
+      'sim-ok'
+    );
+
+    const after =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    assert.equal(after.version, 2);
+    assert.equal(after.diskVersion, 2);
+  }
+);
+
+test(
+  'version-specific hash validation rejects mismatched version/hash combinations',
+  async () => {
+    await configureEnvironment();
+    await cleanPlanDir();
+
+    const {
+      writeApprovedExecutionPlan,
+      getApprovedExecutionPlanPath,
+      loadApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const {
+      createHash,
+    } = await import('node:crypto');
+
+    function stableStringify(
+      value: unknown
+    ): string {
+      if (
+        value === null ||
+        typeof value !== 'object'
+      ) {
+        return JSON.stringify(value);
+      }
+
+      if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(',')}]`;
+      }
+
+      const entries = Object.entries(
+        value as Record<string, unknown>
+      ).sort(([a], [b]) =>
+        a.localeCompare(b)
+      );
+
+      return `{${entries
+        .map(
+          ([key, item]) =>
+            `${JSON.stringify(key)}:${stableStringify(item)}`
+        )
+        .join(',')}}`;
+    }
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          signature: 'sig-hash-mismatch',
+        })
+      );
+
+    const path =
+      getApprovedExecutionPlanPath(
+        created.planId
+      );
+
+    const parsed = JSON.parse(
+      await readFile(path, 'utf8')
+    );
+
+    /*
+     * Change the on-disk version from 2 to 1 WITHOUT
+     * recomputing the hash. The file still carries a
+     * v2 hash, but now claims to be v1. The loader
+     * must reject this because hashV1PlanContent
+     * produces a different hash than hashV2PlanContent.
+     */
+    parsed.version = 1;
+
+    await writeFile(
+      path,
+      JSON.stringify(parsed, null, 2),
+      'utf8'
+    );
+
+    await assert.rejects(
+      () =>
+        loadApprovedExecutionPlan(
+          created.planId
+        ),
+      /hash mismatch/
+    );
+
+    /*
+     * Also verify the reverse: recompute the v1 hash
+     * but leave version as 2. The v2 hash check must
+     * reject it.
+     */
+    const parsed2 = JSON.parse(
+      await readFile(path, 'utf8')
+    );
+
+    parsed2.version = 1;
+
+    const v1Content = {
+      version: 1 as const,
+      planId: parsed2.planId,
+      state: parsed2.state,
+      payload: parsed2.payload,
+    };
+
+    parsed2.sha256 = createHash('sha256')
+      .update(stableStringify(v1Content))
+      .digest('hex');
+
+    /*
+     * Now put version back to 2 but keep the v1 hash.
+     */
+    parsed2.version = 2;
+
+    await writeFile(
+      path,
+      JSON.stringify(parsed2, null, 2),
+      'utf8'
+    );
+
+    await assert.rejects(
+      () =>
+        loadApprovedExecutionPlan(
+          created.planId
+        ),
+      /hash mismatch/
     );
   }
 );

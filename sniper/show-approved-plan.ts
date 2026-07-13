@@ -96,6 +96,8 @@ async function main(): Promise<void> {
           planId: file.planId,
           valid: true,
           version: file.version,
+          diskVersion:
+            file.diskVersion,
           sha256: file.sha256,
           path,
           state: file.state,
@@ -126,6 +128,7 @@ async function main(): Promise<void> {
       '\n--- Header ---',
       `PlanId: ${file.planId}`,
       `Version: ${file.version}`,
+      `DiskVersion: ${file.diskVersion}`,
       `Sha256: ${file.sha256}`,
       `Path: ${path}`,
     ].join('\n')

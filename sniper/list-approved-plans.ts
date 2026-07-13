@@ -29,6 +29,8 @@ async function main(): Promise<void> {
             (plan) => ({
               planId: plan.planId,
               version: plan.version,
+              diskVersion:
+                plan.diskVersion,
               sha256: plan.sha256,
               status:
                 plan.state.status,
