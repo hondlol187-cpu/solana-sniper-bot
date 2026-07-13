@@ -491,6 +491,20 @@ export const config = {
     5,
     300
   ),
+
+  maxSimulationReceiptAgeSeconds: numberEnv(
+    'MAX_SIMULATION_RECEIPT_AGE_SECONDS',
+    15,
+    1,
+    120
+  ),
+
+  maxSimulationSlotLag: numberEnv(
+    'MAX_SIMULATION_SLOT_LAG',
+    32,
+    1,
+    200
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

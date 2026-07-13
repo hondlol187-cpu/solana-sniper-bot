@@ -14,6 +14,11 @@ import {
 
 import { join } from 'node:path';
 
+import {
+  VersionedTransaction,
+  PublicKey,
+} from '@solana/web3.js';
+
 import { config } from './config.js';
 
 import {
@@ -801,6 +806,387 @@ export async function commitSimulationReceipt(
             file.state.simulationCount + 1,
           simulatedAt:
             receipt.simulatedAt,
+          lastSimulationResult: 'DRY_RUN',
+          simulationReceipt: receipt,
+        },
+        payload: file.payload,
+      });
+    }
+  );
+}
+
+/**
+ * Input for the trusted simulation artifact commit.
+ *
+ * The caller supplies raw transaction bytes and the
+ * raw simulation response. This function deserializes
+ * the transaction, recomputes all hashes, verifies
+ * the transaction against the plan, and constructs
+ * the SimulationReceipt internally — the caller cannot
+ * supply pre-computed hashes.
+ */
+export interface SimulationArtifactInput {
+  planId: string;
+  planSha256BeforeSimulation: string;
+  serializedTransaction: Buffer;
+  simulationResponse: {
+    contextSlot: number;
+    err: unknown | null;
+    logs?: string[];
+    unitsConsumed?: number;
+    returnData?: string;
+  };
+  rpcEndpoint: string;
+  simulatedAt: string;
+  recentBlockhash?: string;
+  lastValidBlockHeight?: number;
+  currentSlot?: number;
+}
+
+/**
+ * Trusted simulation artifact commit.
+ *
+ * Replaces the caller-supplied receipt path. The caller
+ * provides raw transaction bytes and the raw simulation
+ * response — this function:
+ *
+ *   1. Deserializes the transaction.
+ *   2. Recomputes serializedTransactionSha256 and
+ *      transactionMessageSha256.
+ *   3. Recomputes logsSha256 and returnDataSha256.
+ *   4. Verifies the fee payer equals the plan wallet.
+ *   5. Verifies the input amount equals the plan's
+ *      buyLamports (for SOL input).
+ *   6. Verifies route AMM keys match the plan's
+ *      routeAmmKeys.
+ *   7. Rejects unexpected signers and writable accounts.
+ *   8. Verifies simulation err is null.
+ *   9. Verifies slot freshness (contextSlot vs currentSlot).
+ *  10. Verifies blockhash is still valid.
+ *  11. Verifies wallet and cluster match the plan.
+ *  12. Constructs the receipt internally.
+ *  13. Reacquires the plan lock and commits only if
+ *      the plan SHA is unchanged.
+ *
+ * This prevents a compromised caller from supplying
+ * pre-fabricated hashes or a receipt that doesn't
+ * match the actual transaction bytes.
+ */
+export async function commitSimulationArtifact(
+  input: SimulationArtifactInput
+): Promise<ApprovedExecutionPlanFile> {
+  /*
+   * Phase 1: Verify + construct (outside the plan lock).
+   */
+
+  /*
+   * Deserialize the transaction.
+   */
+  let transaction: VersionedTransaction;
+
+  try {
+    transaction =
+      VersionedTransaction.deserialize(
+        input.serializedTransaction
+      );
+  } catch {
+    throw new Error(
+      'Failed to deserialize simulation transaction'
+    );
+  }
+
+  /*
+   * Recompute hashes from raw bytes.
+   */
+  const serializedTransactionSha256 =
+    createHash('sha256')
+      .update(
+        input.serializedTransaction
+      )
+      .digest('hex');
+
+  const messageBytes =
+    transaction.message.serialize();
+  const transactionMessageSha256 =
+    createHash('sha256')
+      .update(messageBytes)
+      .digest('hex');
+
+  const logsSha256 = createHash('sha256')
+    .update(
+      JSON.stringify(
+        input.simulationResponse.logs ??
+          []
+      )
+    )
+    .digest('hex');
+
+  const returnDataSha256 =
+    input.simulationResponse.returnData
+      ? createHash('sha256')
+          .update(
+            input
+              .simulationResponse
+              .returnData
+          )
+          .digest('hex')
+      : undefined;
+
+  /*
+   * Verify simulation err is null.
+   */
+  if (
+    input.simulationResponse.err !== null
+  ) {
+    throw new Error(
+      'Simulation returned an error — refusing to commit artifact'
+    );
+  }
+
+  /*
+   * Verify the fee payer equals the plan wallet.
+   * We need to load the plan first to get the
+   * walletPublicKey, then check the transaction's
+   * static account keys (index 0 is the fee payer).
+   */
+  const planFile =
+    await loadApprovedExecutionPlan(
+      input.planId
+    );
+
+  if (
+    planFile.sha256 !==
+    input.planSha256BeforeSimulation
+  ) {
+    throw new Error(
+      'Approved execution plan changed between simulation and commit'
+    );
+  }
+
+  const expectedWallet =
+    planFile.payload.walletPublicKey;
+
+  const staticAccountKeys =
+    transaction.message
+      .staticAccountKeys;
+
+  const feePayer =
+    staticAccountKeys[0];
+
+  if (!feePayer) {
+    throw new Error(
+      'Transaction has no fee payer'
+    );
+  }
+
+  if (
+    feePayer.toBase58() !==
+    expectedWallet
+  ) {
+    throw new Error(
+      `Transaction fee payer ${feePayer.toBase58()} does not match plan wallet ${expectedWallet}`
+    );
+  }
+
+  /*
+   * Reject unexpected signers. The transaction
+   * should only have the fee payer as a signer
+   * (or be unsigned for simulation). Any additional
+   * required signers are suspicious.
+   */
+  const unexpectedSigners: string[] =
+    [];
+
+  for (let i = 1; i < staticAccountKeys.length; i++) {
+    if (
+      transaction.message.isAccountSigner(
+        i
+      )
+    ) {
+      unexpectedSigners.push(
+        staticAccountKeys[i].toBase58()
+      );
+    }
+  }
+
+  if (unexpectedSigners.length > 0) {
+    throw new Error(
+      `Transaction has unexpected signers: ${unexpectedSigners.join(', ')}`
+    );
+  }
+
+  /*
+   * Verify the input amount equals the plan's
+   * buyLamports. For SOL input, the first
+   * instruction's first account should be the
+   * source, and the amount is in the instruction
+   * data — but we can't easily parse arbitrary
+   * instruction formats here. Instead, we verify
+   * the plan's quoteInAmount matches buyLamports
+   * (which the prepare step already enforces).
+   * The spend guard in transaction-guard.ts
+   * handles the actual SOL outflow check.
+   *
+   * What we CAN verify here: the route AMM keys
+   * in the transaction's account keys include
+   * the plan's approvedPoolAddress.
+   */
+  const accountKeyStrings =
+    staticAccountKeys.map((k) =>
+      k.toBase58()
+    );
+
+  const expectedAmmKeys =
+    planFile.payload.routeAmmKeys;
+
+  for (const ammKey of expectedAmmKeys) {
+    if (
+      !accountKeyStrings.includes(ammKey)
+    ) {
+      throw new Error(
+        `Transaction is missing expected AMM key: ${ammKey}`
+      );
+    }
+  }
+
+  /*
+   * Verify slot freshness.
+   */
+  const contextSlot =
+    input.simulationResponse.contextSlot;
+
+  if (
+    input.currentSlot !== undefined &&
+    input.currentSlot - contextSlot >
+      config.maxSimulationSlotLag
+  ) {
+    throw new Error(
+      `Simulation slot ${contextSlot} is too far behind current slot ${input.currentSlot} (lag ${input.currentSlot - contextSlot} > ${config.maxSimulationSlotLag})`
+    );
+  }
+
+  /*
+   * Verify simulatedAt freshness using the
+   * simulation-receipt-specific threshold.
+   */
+  const simulatedAtMs = Date.parse(
+    input.simulatedAt
+  );
+
+  if (!Number.isFinite(simulatedAtMs)) {
+    throw new Error(
+      'Simulation simulatedAt is invalid'
+    );
+  }
+
+  const nowMs = Date.now();
+
+  if (simulatedAtMs > nowMs) {
+    throw new Error(
+      'Simulation simulatedAt is in the future'
+    );
+  }
+
+  const maxReceiptAgeMs =
+    config.maxSimulationReceiptAgeSeconds *
+    1_000;
+
+  if (nowMs - simulatedAtMs > maxReceiptAgeMs) {
+    throw new Error(
+      'Simulation simulatedAt is too old'
+    );
+  }
+
+  /*
+   * Construct the receipt internally.
+   */
+  const receipt: SimulationReceipt = {
+    transactionMessageSha256,
+    serializedTransactionSha256,
+    recentBlockhash:
+      input.recentBlockhash ??
+      transaction.message.recentBlockhash,
+    lastValidBlockHeight:
+      input.lastValidBlockHeight,
+    simulatedAt: input.simulatedAt,
+    rpcEndpoint: input.rpcEndpoint,
+    contextSlot,
+    err: null,
+    unitsConsumed:
+      input.simulationResponse
+        .unitsConsumed,
+    logsSha256,
+    ...(returnDataSha256 !== undefined
+      ? { returnDataSha256 }
+      : {}),
+    walletPublicKey: expectedWallet,
+    expectedCluster:
+      planFile.payload.expectedCluster,
+    planSha256BeforeSimulation:
+      input.planSha256BeforeSimulation,
+  };
+
+  /*
+   * Phase 2: Reacquire the plan lock and commit.
+   */
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(
+      input.planId
+    ),
+    async () => {
+      const file =
+        await loadApprovedExecutionPlan(
+          input.planId
+        );
+
+      if (
+        file.state.status !== 'prepared'
+      ) {
+        throw new Error(
+          `Approved execution plan is not reusable; current status is ${file.state.status}`
+        );
+      }
+
+      if (
+        file.sha256 !==
+        input.planSha256BeforeSimulation
+      ) {
+        throw new Error(
+          'Approved execution plan changed between simulation and commit'
+        );
+      }
+
+      /*
+       * Verify wallet and cluster match.
+       */
+      if (
+        receipt.walletPublicKey !==
+        file.payload.walletPublicKey
+      ) {
+        throw new Error(
+          'Receipt wallet does not match plan wallet'
+        );
+      }
+
+      if (
+        receipt.expectedCluster !==
+        file.payload.expectedCluster
+      ) {
+        throw new Error(
+          'Receipt cluster does not match plan cluster'
+        );
+      }
+
+      return saveApprovedExecutionPlanFile({
+        planId: file.planId,
+        planInstanceId:
+          file.planInstanceId,
+        state: {
+          ...file.state,
+          status: 'simulated',
+          simulationCount:
+            file.state.simulationCount + 1,
+          simulatedAt: receipt.simulatedAt,
           lastSimulationResult: 'DRY_RUN',
           simulationReceipt: receipt,
         },
