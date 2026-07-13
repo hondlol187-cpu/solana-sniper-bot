@@ -89,6 +89,29 @@ async function main(): Promise<void> {
         file
       );
 
+  /*
+   * Compute age and expiry for the JSON stability
+   * contract so scripts can decide whether a plan is
+   * executable without parsing prose. ageMs is measured
+   * from payload.createdAt; expired is true if ageMs
+   * exceeds MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS.
+   */
+  const nowMs = Date.now();
+  const createdAtMs = Date.parse(
+    file.payload.createdAt
+  );
+  const ageMs = nowMs - createdAtMs;
+
+  const maxPreparedAgeSeconds = Number(
+    process.env
+      .MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS ??
+      '30'
+  );
+
+  const expired =
+    file.state.status === 'prepared' &&
+    ageMs > maxPreparedAgeSeconds * 1_000;
+
   if (jsonMode) {
     console.log(
       JSON.stringify(
@@ -102,11 +125,16 @@ async function main(): Promise<void> {
           path,
           state: file.state,
           payload: file.payload,
-          environment: {
-            ok: environmentAssessment.ok,
-            reasons:
-              environmentAssessment.reasons,
-          },
+          environmentOk:
+            environmentAssessment.ok,
+          environmentReasons:
+            environmentAssessment.reasons,
+          ageMs,
+          expired,
+          status: file.state.status,
+          reusable:
+            file.state.status ===
+            'prepared',
         },
         null,
         2

@@ -1,15 +1,136 @@
 export {};
 
+interface ListFilters {
+  status?:
+    | 'prepared'
+    | 'simulated'
+    | 'cancelled';
+  limit?: number;
+  mint?: string;
+  pool?: string;
+}
+
+function parseArgs(
+  args: string[]
+): {
+  jsonMode: boolean;
+  filters: ListFilters;
+} {
+  const jsonMode = args.includes(
+    '--json'
+  );
+
+  const filters: ListFilters = {};
+
+  const statusIdx = args.indexOf(
+    '--status'
+  );
+
+  if (statusIdx >= 0) {
+    const raw = args[statusIdx + 1];
+
+    if (
+      raw === 'prepared' ||
+      raw === 'simulated' ||
+      raw === 'cancelled'
+    ) {
+      filters.status = raw;
+    } else {
+      throw new Error(
+        `--status must be prepared|simulated|cancelled, got: ${raw}`
+      );
+    }
+  }
+
+  const limitIdx = args.indexOf(
+    '--limit'
+  );
+
+  if (limitIdx >= 0) {
+    const raw = args[limitIdx + 1];
+    const n = Number(raw);
+
+    if (
+      !Number.isFinite(n) ||
+      n < 1 ||
+      !Number.isInteger(n)
+    ) {
+      throw new Error(
+        `--limit must be a positive integer, got: ${raw}`
+      );
+    }
+
+    filters.limit = n;
+  }
+
+  const mintIdx = args.indexOf(
+    '--mint'
+  );
+
+  if (mintIdx >= 0) {
+    filters.mint = args[mintIdx + 1];
+  }
+
+  const poolIdx = args.indexOf(
+    '--pool'
+  );
+
+  if (poolIdx >= 0) {
+    filters.pool = args[poolIdx + 1];
+  }
+
+  return { jsonMode, filters };
+}
+
+function applyFilters(
+  valid: import('./execution-plan.js').ApprovedExecutionPlanFile[],
+  filters: ListFilters
+): import('./execution-plan.js').ApprovedExecutionPlanFile[] {
+  let result = valid;
+
+  if (filters.status) {
+    result = result.filter(
+      (p) =>
+        p.state.status ===
+        filters.status
+    );
+  }
+
+  if (filters.mint) {
+    result = result.filter(
+      (p) =>
+        p.payload.exactMint ===
+        filters.mint
+    );
+  }
+
+  if (filters.pool) {
+    result = result.filter(
+      (p) =>
+        p.payload
+          .approvedPoolAddress ===
+        filters.pool
+    );
+  }
+
+  if (filters.limit) {
+    result = result.slice(
+      0,
+      filters.limit
+    );
+  }
+
+  return result;
+}
+
 async function main(): Promise<void> {
   process.env.LIVE_TRADING =
     'false';
 
-  const args =
-    process.argv.slice(2);
-
-  const jsonMode = args.includes(
-    '--json'
-  );
+  const { jsonMode, filters } =
+    parseArgs(
+      process.argv.slice(2)
+    );
 
   const [
     executionPlanModule,
@@ -21,11 +142,15 @@ async function main(): Promise<void> {
     await executionPlanModule
       .scanApprovedExecutionPlans();
 
+  const filtered =
+    applyFilters(valid, filters);
+
   if (jsonMode) {
     console.log(
       JSON.stringify(
         {
-          valid: valid.map(
+          filters,
+          valid: filtered.map(
             (plan) => ({
               planId: plan.planId,
               version: plan.version,
@@ -67,7 +192,7 @@ async function main(): Promise<void> {
   }
 
   if (
-    valid.length === 0 &&
+    filtered.length === 0 &&
     invalid.length === 0
   ) {
     console.log(
@@ -77,7 +202,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (valid.length > 0) {
+  if (filtered.length > 0) {
     const trunc = (
       value: string,
       len: number
@@ -96,15 +221,37 @@ async function main(): Promise<void> {
       'SIMS',
     ].join(' ');
 
-    console.log(
-      `Valid plans (${valid.length}):`
-    );
+    const filterDesc: string[] = [];
+
+    if (filters.status)
+      filterDesc.push(
+        `status=${filters.status}`
+      );
+    if (filters.mint)
+      filterDesc.push(
+        `mint=${filters.mint}`
+      );
+    if (filters.pool)
+      filterDesc.push(
+        `pool=${filters.pool}`
+      );
+    if (filters.limit)
+      filterDesc.push(
+        `limit=${filters.limit}`
+      );
+
+    const title =
+      filterDesc.length > 0
+        ? `Valid plans (${filtered.length}, filtered: ${filterDesc.join(', ')}):`
+        : `Valid plans (${filtered.length}):`;
+
+    console.log(title);
     console.log(header);
     console.log(
       '-'.repeat(header.length)
     );
 
-    for (const plan of valid) {
+    for (const plan of filtered) {
       const state = plan.state;
       const payload = plan.payload;
 
@@ -134,7 +281,7 @@ async function main(): Promise<void> {
     }
 
     console.log(
-      `\nTotal valid: ${valid.length} plan${valid.length === 1 ? '' : 's'}`
+      `\nTotal valid: ${filtered.length} plan${filtered.length === 1 ? '' : 's'}`
     );
   }
 

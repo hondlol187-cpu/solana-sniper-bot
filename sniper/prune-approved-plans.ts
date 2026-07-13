@@ -35,6 +35,14 @@ async function main(): Promise<void> {
     '--dry-run'
   );
 
+  const jsonMode = args.includes(
+    '--json'
+  );
+
+  const allowInvalid = args.includes(
+    '--allow-invalid'
+  );
+
   const finishedHoursIdx =
     args.indexOf(
       '--also-prune-finished-hours'
@@ -62,13 +70,14 @@ async function main(): Promise<void> {
 
   /*
    * Always scan so we can surface invalid files the
-   * prune would have skipped. In dry-run mode we do
-   * NOT delete — pruneApprovedExecutionPlans returns
-   * the exact candidates instead.
+   * prune would have skipped and build the summary.
    */
-  const { invalid } =
+  const { valid, invalid } =
     await executionPlanModule
       .scanApprovedExecutionPlans();
+
+  const scanned =
+    valid.length + invalid.length;
 
   const results =
     await executionPlanModule
@@ -77,10 +86,65 @@ async function main(): Promise<void> {
         dryRun,
       });
 
-  if (dryRun) {
+  /*
+   * Audit each pruned plan in live mode only.
+   */
+  if (!dryRun) {
+    for (const result of results) {
+      await auditModule.audit(
+        'candidate.execution.plan-pruned',
+        {
+          planId: result.planId,
+          previousStatus:
+            result.previousStatus,
+          reason: result.reason,
+          ageMs: result.ageMs,
+        }
+      );
+    }
+  }
+
+  const summary = {
+    scanned,
+    valid: valid.length,
+    invalid: invalid.length,
+    wouldPrune: dryRun
+      ? results.length
+      : 0,
+    pruned: dryRun
+      ? 0
+      : results.length,
+    skippedInvalid:
+      invalid.length,
+  };
+
+  if (jsonMode) {
     console.log(
-      `Dry run — would prune ${results.length} plan${results.length === 1 ? '' : 's'}:`
+      JSON.stringify(
+        {
+          dryRun,
+          summary,
+          results,
+          invalid,
+        },
+        null,
+        2
+      )
     );
+  } else {
+    if (dryRun) {
+      console.log(
+        `Dry run — would prune ${results.length} plan${results.length === 1 ? '' : 's'}:`
+      );
+    } else if (results.length === 0) {
+      console.log(
+        'No plans pruned.'
+      );
+    } else {
+      console.log(
+        `PRUNED ${results.length} plan${results.length === 1 ? '' : 's'}`
+      );
+    }
 
     for (const result of results) {
       console.log(
@@ -105,57 +169,45 @@ async function main(): Promise<void> {
       }
     }
 
-    console.log(
-      `\nNo files were deleted (dry run).`
-    );
-
-    return;
-  }
-
-  for (const result of results) {
-    await auditModule.audit(
-      'candidate.execution.plan-pruned',
-      {
-        planId: result.planId,
-        previousStatus:
-          result.previousStatus,
-        reason: result.reason,
-        ageMs: result.ageMs,
-      }
-    );
-  }
-
-  if (results.length === 0) {
-    console.log(
-      'No plans pruned.'
-    );
-  } else {
-    console.log(
-      `PRUNED ${results.length} plan${results.length === 1 ? '' : 's'}`
-    );
-
-    for (const result of results) {
+    if (dryRun) {
       console.log(
-        [
-          `  PlanId: ${result.planId}`,
-          `PreviousStatus: ${result.previousStatus}`,
-          `Reason: ${result.reason}`,
-          `AgeMs: ${result.ageMs}`,
-        ].join(' | ')
+        `\nNo files were deleted (dry run).`
       );
     }
+
+    console.log(
+      `\n--- Summary ---`
+    );
+    console.log(
+      `Scanned: ${summary.scanned}`
+    );
+    console.log(
+      `Valid: ${summary.valid}`
+    );
+    console.log(
+      `Invalid: ${summary.invalid}`
+    );
+    console.log(
+      dryRun
+        ? `WouldPrune: ${summary.wouldPrune}`
+        : `Pruned: ${summary.pruned}`
+    );
+    console.log(
+      `SkippedInvalid: ${summary.skippedInvalid}`
+    );
   }
 
-  if (invalid.length > 0) {
-    console.log(
-      `\nSkipped ${invalid.length} invalid plan${invalid.length === 1 ? '' : 's'} (not loadable, not pruned):`
-    );
-
-    for (const inv of invalid) {
-      console.log(
-        `  ${inv.planId} | error: ${inv.error}`
-      );
-    }
+  /*
+   * Exit non-zero if there are invalid plans and the
+   * caller didn't opt in with --allow-invalid. This
+   * makes prune usable in CI/cron where invalid files
+   * should be a signal, not a silent skip.
+   */
+  if (
+    invalid.length > 0 &&
+    !allowInvalid
+  ) {
+    process.exitCode = 1;
   }
 }
 

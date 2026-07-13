@@ -38,16 +38,11 @@ async function main(): Promise<void> {
   const nowMs = Date.now();
 
   let stalePrepared = 0;
-  let oldSimulated = 0;
-  let oldCancelled = 0;
-  let freshPrepared = 0;
-  let freshSimulated = 0;
-  let freshCancelled = 0;
 
   for (const plan of valid) {
-    const status = plan.state.status;
-
-    if (status === 'prepared') {
+    if (
+      plan.state.status === 'prepared'
+    ) {
       const ageMs =
         nowMs -
         Date.parse(
@@ -56,137 +51,138 @@ async function main(): Promise<void> {
 
       if (ageMs > maxPreparedAgeMs) {
         stalePrepared++;
-      } else {
-        freshPrepared++;
       }
-    } else if (status === 'simulated') {
-      oldSimulated++;
-      freshSimulated++;
-    } else if (status === 'cancelled') {
-      oldCancelled++;
-      freshCancelled++;
     }
   }
 
   /*
-   * "old finished" counts are not age-gated here
-   * because prune only touches them when the caller
-   * opts in with a threshold. The doctor reports
-   * total finished counts so operators can decide.
+   * Health exit codes for CI/cron:
+   *   0 = healthy (no invalid, no stale prepared)
+   *   1 = invalid plans found
+   *   2 = stale prepared plans found
+   *   3 = both invalid and stale prepared
    */
-  void freshSimulated;
-  void freshCancelled;
-  void oldSimulated;
-  void oldCancelled;
+  const hasInvalid =
+    invalid.length > 0;
+  const hasStale = stalePrepared > 0;
+
+  let exitCode = 0;
+
+  if (hasInvalid) exitCode += 1;
+  if (hasStale) exitCode += 2;
+
+  const report = {
+    totalFiles:
+      valid.length + invalid.length,
+    validCount: valid.length,
+    invalidCount: invalid.length,
+    byStatus: {
+      prepared: valid.filter(
+        (p) =>
+          p.state.status === 'prepared'
+      ).length,
+      simulated: valid.filter(
+        (p) =>
+          p.state.status === 'simulated'
+      ).length,
+      cancelled: valid.filter(
+        (p) =>
+          p.state.status === 'cancelled'
+      ).length,
+    },
+    stalePreparedCount: stalePrepared,
+    finishedCount: valid.filter(
+      (p) =>
+        p.state.status === 'simulated' ||
+        p.state.status === 'cancelled'
+    ).length,
+    invalid,
+    thresholds: {
+      maxPreparedAgeSeconds,
+    },
+    health: {
+      exitCode,
+      healthy: exitCode === 0,
+      hasInvalid,
+      hasStale,
+    },
+  };
 
   if (jsonMode) {
     console.log(
-      JSON.stringify(
-        {
-          totalFiles:
-            valid.length +
-            invalid.length,
-          validCount: valid.length,
-          invalidCount:
-            invalid.length,
-          byStatus: {
-            prepared:
-              valid.filter(
-                (p) =>
-                  p.state.status ===
-                  'prepared'
-              ).length,
-            simulated:
-              valid.filter(
-                (p) =>
-                  p.state.status ===
-                  'simulated'
-              ).length,
-            cancelled:
-              valid.filter(
-                (p) =>
-                  p.state.status ===
-                  'cancelled'
-              ).length,
-          },
-          stalePreparedCount:
-            stalePrepared,
-          finishedCount:
-            valid.filter(
-              (p) =>
-                p.state.status ===
-                  'simulated' ||
-                p.state.status ===
-                  'cancelled'
-            ).length,
-          invalid,
-          thresholds: {
-            maxPreparedAgeSeconds,
-          },
-        },
-        null,
-        2
-      )
+      JSON.stringify(report, null, 2)
     );
-
-    return;
-  }
-
-  console.log(
-    '=== APPROVED PLAN DOCTOR ==='
-  );
-
-  console.log(
-    [
-      `\nTotal files: ${valid.length + invalid.length}`,
-      `Valid: ${valid.length}`,
-      `Invalid: ${invalid.length}`,
-    ].join('\n')
-  );
-
-  console.log(
-    [
-      '\n--- Valid by status ---',
-      `Prepared: ${valid.filter((p) => p.state.status === 'prepared').length}`,
-      `  (stale, would expire: ${stalePrepared})`,
-      `Simulated: ${valid.filter((p) => p.state.status === 'simulated').length}`,
-      `Cancelled: ${valid.filter((p) => p.state.status === 'cancelled').length}`,
-    ].join('\n')
-  );
-
-  console.log(
-    [
-      '\n--- Thresholds ---',
-      `Max prepared age: ${maxPreparedAgeSeconds}s`,
-      `Finished pruning: opt-in via --also-prune-finished-hours (off by default)`,
-    ].join('\n')
-  );
-
-  if (invalid.length > 0) {
+  } else {
     console.log(
-      `\n--- Invalid plans (${invalid.length}) ---`
+      '=== APPROVED PLAN DOCTOR ==='
     );
 
-    for (const inv of invalid) {
+    console.log(
+      [
+        `\nTotal files: ${report.totalFiles}`,
+        `Valid: ${report.validCount}`,
+        `Invalid: ${report.invalidCount}`,
+      ].join('\n')
+    );
+
+    console.log(
+      [
+        '\n--- Valid by status ---',
+        `Prepared: ${report.byStatus.prepared}`,
+        `  (stale, would expire: ${stalePrepared})`,
+        `Simulated: ${report.byStatus.simulated}`,
+        `Cancelled: ${report.byStatus.cancelled}`,
+      ].join('\n')
+    );
+
+    console.log(
+      [
+        '\n--- Thresholds ---',
+        `Max prepared age: ${maxPreparedAgeSeconds}s`,
+        `Finished pruning: opt-in via --also-prune-finished-hours (off by default)`,
+      ].join('\n')
+    );
+
+    if (invalid.length > 0) {
       console.log(
-        `  ${inv.planId} | error: ${inv.error}`
+        `\n--- Invalid plans (${invalid.length}) ---`
+      );
+
+      for (const inv of invalid) {
+        console.log(
+          `  ${inv.planId} | error: ${inv.error}`
+        );
+      }
+    }
+
+    console.log(
+      [
+        '\n--- Health ---',
+        `ExitCode: ${exitCode}`,
+        `Healthy: ${exitCode === 0}`,
+        `HasInvalid: ${hasInvalid}`,
+        `HasStale: ${hasStale}`,
+      ].join('\n')
+    );
+
+    if (stalePrepared > 0) {
+      console.log(
+        `\nAction: ${stalePrepared} prepared plan${stalePrepared === 1 ? ' is' : 's are'} stale and would be pruned by:`
+      );
+      console.log(
+        '  npm run sniper:prune-approved-plans'
+      );
+    }
+
+    if (invalid.length > 0) {
+      console.log(
+        `\nAction: ${invalid.length} invalid plan${invalid.length === 1 ? '' : 's'} need investigation — load failed.`
       );
     }
   }
 
-  if (stalePrepared > 0) {
-    console.log(
-      `\nAction: ${stalePrepared} prepared plan${stalePrepared === 1 ? ' is' : 's are'} stale and would be pruned by:`
-    );
-    console.log(
-      '  npm run sniper:prune-approved-plans'
-    );
-  }
-
-  if (invalid.length > 0) {
-    console.log(
-      `\nAction: ${invalid.length} invalid plan${invalid.length === 1 ? '' : 's'} need investigation — load failed.`
-    );
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
   }
 }
 
