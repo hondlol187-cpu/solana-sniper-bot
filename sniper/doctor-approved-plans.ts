@@ -64,25 +64,40 @@ async function main(): Promise<void> {
     await planAuditModule.verifyPlanRetentionLedger();
 
   /*
+   * Assess deletion journal health.
+   */
+  const journalHealth =
+    await planAuditModule.assessDeletionJournalHealth();
+
+  /*
    * Health exit codes for CI/cron:
-   *   0 = healthy (no invalid, no stale prepared, retention OK)
+   *   0 = healthy (no invalid, no stale prepared, retention OK,
+   *         no unresolved journals)
    *   1 = invalid plans found
    *   2 = stale prepared plans found
    *   3 = both invalid and stale prepared
    *   4 = retention ledger integrity failure
-   *   Combinations are additive (e.g. 1+2+4=7).
+   *   8 = unresolved deletion journals (pending, ledger-recorded,
+   *         committed-but-plan-exists, or conflicts)
+   *   Combinations are additive.
    */
   const hasInvalid =
     invalid.length > 0;
   const hasStale = stalePrepared > 0;
   const hasRetentionFailure =
     !retentionVerification.ok;
+  const hasJournalIssues =
+    journalHealth.pending > 0 ||
+    journalHealth.ledgerRecorded > 0 ||
+    journalHealth.committedButPlanExists > 0 ||
+    journalHealth.conflicts > 0;
 
   let exitCode = 0;
 
   if (hasInvalid) exitCode += 1;
   if (hasStale) exitCode += 2;
   if (hasRetentionFailure) exitCode += 4;
+  if (hasJournalIssues) exitCode += 8;
 
   const report = {
     totalFiles:
@@ -119,6 +134,7 @@ async function main(): Promise<void> {
       hasInvalid,
       hasStale,
       hasRetentionFailure,
+      hasJournalIssues,
     },
     retention: {
       ok: retentionVerification.ok,
@@ -126,6 +142,16 @@ async function main(): Promise<void> {
         retentionVerification.entryCount,
       errors:
         retentionVerification.errors,
+    },
+    deletionJournals: {
+      total: journalHealth.total,
+      pending: journalHealth.pending,
+      ledgerRecorded:
+        journalHealth.ledgerRecorded,
+      committed: journalHealth.committed,
+      committedButPlanExists:
+        journalHealth.committedButPlanExists,
+      conflicts: journalHealth.conflicts,
     },
   };
 
@@ -184,6 +210,7 @@ async function main(): Promise<void> {
         `HasInvalid: ${hasInvalid}`,
         `HasStale: ${hasStale}`,
         `HasRetentionFailure: ${hasRetentionFailure}`,
+        `HasJournalIssues: ${hasJournalIssues}`,
       ].join('\n')
     );
 
@@ -205,6 +232,24 @@ async function main(): Promise<void> {
       for (const err of retentionVerification.errors) {
         console.log(`    ${err}`);
       }
+    }
+
+    console.log(
+      [
+        '\n--- Deletion Journals ---',
+        `Total: ${journalHealth.total}`,
+        `Pending: ${journalHealth.pending}`,
+        `LedgerRecorded: ${journalHealth.ledgerRecorded}`,
+        `Committed: ${journalHealth.committed}`,
+        `CommittedButPlanExists: ${journalHealth.committedButPlanExists}`,
+        `Conflicts: ${journalHealth.conflicts}`,
+      ].join('\n')
+    );
+
+    if (hasJournalIssues) {
+      console.log(
+        `\nAction: run npm run sniper:recover-plan-deletions -- --dry-run to preview recovery.`
+      );
     }
 
     if (stalePrepared > 0) {

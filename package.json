@@ -30,6 +30,7 @@
     "sniper:doctor-approved-plans": "tsx sniper/doctor-approved-plans.ts",
     "sniper:history-approved-plans": "tsx sniper/history-approved-plans.ts",
     "sniper:verify-plan-history": "tsx sniper/verify-plan-history.ts",
+    "sniper:recover-plan-deletions": "tsx sniper/recover-plan-deletions.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

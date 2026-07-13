@@ -512,21 +512,43 @@ export async function deleteApprovedExecutionPlan(
         }
 
         /*
-         * Plan loaded successfully. Record the tombstone
-         * BEFORE deleting the file. This is fail-closed:
-         * if the tombstone write or audit fails (disk
-         * full, permissions, etc.), the deletion is
-         * aborted and the plan remains on disk.
+         * Plan loaded successfully. Prepare the crash-
+         * consistent deletion journal. This transitions
+         * through pending → ledger-recorded → committed
+         * under the ledger lock. Only a committed journal
+         * permits removal of the plan file.
+         *
+         * This is fail-closed: if the journal write,
+         * ledger append, or audit fails (disk full,
+         * permissions, etc.), the deletion is aborted
+         * and the plan remains on disk.
          */
-        const { recordPlanDeletionOnce } =
-          await import(
-            './plan-audit.js'
+        const {
+          preparePlanDeletion,
+        } = await import(
+          './plan-audit.js'
+        );
+
+        const journal =
+          await preparePlanDeletion(
+            file,
+            reason
           );
 
-        await recordPlanDeletionOnce(
-          file,
-          reason
-        );
+        if (
+          journal.status !== 'committed'
+        ) {
+          throw new Error(
+            `Plan deletion transaction is not committed (status: ${journal.status})`
+          );
+        }
+
+        /*
+         * Journal is committed — safe to remove the
+         * plan file. If rm fails here, recovery can
+         * detect the committed journal + existing plan
+         * and retry the removal.
+         */
       }
 
       const path =
