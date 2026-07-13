@@ -1475,3 +1475,147 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web UI
   to read the candidate store (list pending/approved/executed) is the
   obvious next web-side step.
+
+---
+Task ID: 18
+Agent: main (Z.ai Code)
+Task: Add persistent daily risk circuit breaker. Max daily SOL spend,
+      max daily trade count, max daily wallet drawdown, crash-safe
+      idempotent reservation commits, manual risk status + stale
+      reservation release, persistent halt state.
+
+Work Log:
+- Synced to origin/main (HEAD = e66159b from Task ID 17).
+  Note: sandbox was reset between sessions. Re-cloned repo + reinstalled
+  node_modules. Baseline tsc + lint both exit 0 on fresh checkout.
+- Added config.riskFile (default ./sniper-risk.json),
+  config.maxDailySpendSol (default 0.2, range 0.001..100),
+  config.maxDailyTrades (default 3, range 1..1000),
+  config.maxDailyDrawdownSol (default 0.1, range 0.001..100) to
+  sniper/config.ts.
+- Created sniper/risk.ts implementing RiskState ledger:
+    * RiskReservation { id (UUID), mint, amountLamports, createdAt }
+    * RiskState { version:1, utcDate, openingBalanceLamports,
+                  spentLamports, completedTrades, reservations[],
+                  committedReservationIds[], completedTradeIds[],
+                  haltedReason?, updatedAt }
+    * Atomic write via temp-file-then-rename (.tmp suffix, mode 0o600)
+    * In-process Promise queue serialization (no concurrent overwrites)
+    * validateState() rejects malformed ledgers
+    * loadUnsafe() refuses to silently discard unresolved reservations
+      from a previous UTC day — throws, requires manual review
+    * reserveTrade(mint, amountLamports, currentBalanceLamports):
+        1. Throws if haltedReason is set
+        2. Computes drawdown = opening - current; if > maxDailyDrawdownSol
+           -> sets halt, throws
+        3. Computes projectedSpend = spent + reservedTotal + amount;
+           if > maxDailySpendSol -> sets halt, throws
+        4. Computes projectedTradeCount = completed + reservations + 1;
+           if > maxDailyTrades -> sets halt, throws
+        5. Pushes reservation with fresh UUID, audits risk.trade.reserved
+    * commitReservation(id, currentBalance): idempotent on
+      committedReservationIds. Removes from reservations, adds amount
+      to spentLamports, audits risk.trade.committed.
+    * recordTradeCompleted(tradeId, currentBalance): idempotent on
+      completedTradeIds. Increments completedTrades, audits
+      risk.trade.completed.
+    * releaseReservation(id, expectedMint, currentBalance): removes
+      stale reservation. Requires exact-mint match (case-sensitive).
+      Audits risk.reservation.released.
+    * getRiskState(currentBalance): read-only.
+    * resetRiskState(currentBalance): throws if any active reservations
+      exist. Otherwise writes a fresh empty state (clears halt).
+      Audits risk.state.reset.
+    * deleteRiskFileForTests(): test helper, ENOENT-safe.
+- Added optional riskReservationId to PendingBuyState and
+  OpenPositionState in sniper/state.ts. Preserved through
+  validateState() (typeof === 'string' ? value : undefined).
+- Integrated risk ledger in sniper/index.ts:
+    * After solBalance check, before balanceBefore lookup:
+        config.liveTrading
+          ? await reserveTrade(outputMint, buyLamports, BigInt(solBalance))
+          : null
+      (Dry-run does NOT reserve — nothing is at risk.)
+    * pendingState.riskReservationId = riskReservation?.id
+    * After buy confirmed + purchasedAmount known:
+        if (pendingState.riskReservationId) {
+          const currentSolBalance = await rpcPool.call(getBalance);
+          await commitReservation(pendingState.riskReservationId, BigInt(currentSolBalance));
+        }
+    * openPosition.riskReservationId = pendingState.riskReservationId
+    * After monitorAndExit() completes:
+        const endingSolBalance = await rpcPool.call(getBalance);
+        await recordTradeCompleted(
+          pendingState.riskReservationId ?? buySignature,
+          BigInt(endingSolBalance)
+        );
+      This means a trade is only counted AFTER the full buy+monitor+exit
+      lifecycle completes without throwing.
+- Pending-buy recovery in index.ts: after detecting balance increase,
+  if pending.riskReservationId is set, commit it (idempotent) before
+  writing the recovered OpenPositionState. Preserves riskReservationId
+  in the recovered state.
+- Created sniper/risk-cli.ts:
+    npm run sniper:risk -- status                  -> JSON dump of ledger
+    npm run sniper:risk -- release <id> <mint>     -> release stale reservation
+    npm run sniper:risk -- reset RESET-RISK-LEDGER -> reset (requires exact phrase)
+  CLI initializes RpcPool + walletBalance before dispatching (matches spec).
+- Added "sniper:risk": "tsx sniper/risk-cli.ts" to package.json.
+- Added RISK_FILE, MAX_DAILY_SPEND_SOL, MAX_DAILY_TRADES,
+  MAX_DAILY_DRAWDOWN_SOL to .env.example.
+- Added sniper-risk.json and sniper-risk.json.tmp to .gitignore.
+
+Verification:
+- rm -f .tsbuildinfo && npx tsc --noEmit  -> exit 0
+- npm run lint                              -> exit 0
+- Smoke-tested all 15 risk-ledger paths:
+    1. Fresh state init
+    2. Reserve creates UUID reservation
+    3. Multiple concurrent reservations
+    4. Commit moves amount to spent
+    5. Commit is idempotent (re-commit no-op)
+    6. recordTradeCompleted increments counter
+    7. recordTradeCompleted is idempotent
+    8. Release removes stale reservation
+    9. Release with wrong mint throws
+   10. Spend limit halts at projected > max (verified 0.15+0.06 > 0.2)
+   11. Trade count limit halts at count > max (verified 4th trade refused)
+   12. Drawdown limit halts at drawdown > max (verified 0.15 SOL > 0.1)
+   13. Halted state refuses all new reservations
+   14. Reset clears halt when no active reservations
+   15. All audit events fire correctly
+
+Stage Summary:
+- The risk ledger prevents the bot from exceeding daily spend / count /
+  drawdown limits even across crashes and restarts. Reservations are
+  crash-safe: if a buy is interrupted before commit, the reservation
+  remains in the ledger and counts against projectedSpend until manually
+  released or committed.
+- A halt is persistent. Once any limit is exceeded, the ledger refuses
+  all new reservations until reset with `npm run sniper:risk -- reset
+  RESET-RISK-LEDGER` (and only when no active reservations exist).
+- Reservations are only created in LIVE mode. Dry-run never touches the
+  risk ledger, so dry-run testing cannot accidentally trip the breaker.
+- Trade completion is only recorded after the full buy+monitor+exit
+  lifecycle. A crash during monitoring does not increment the trade
+  count, leaving room for recovery without exceeding the daily limit.
+
+Current project status:
+- Stable, type-safe, lint-clean. Five CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run or live-execute an approved candidate
+    npm run sniper:risk               - status / release / reset the risk ledger
+- NO automatic purchases. Every trade requires explicit human action.
+- Risk ledger enforces daily spend / count / drawdown limits across
+  crashes and restarts.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_r4wt... is in chat history (4th use). User MUST revoke
+  from https://github.com/settings/tokens after this push.
+- The risk ledger has not been end-to-end tested with a real live trade.
+  Should be tested with a tiny amount of SOL on a burner mainnet wallet.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web UI
+  to display risk-ledger status alongside candidate store is the obvious
+  next web-side step.

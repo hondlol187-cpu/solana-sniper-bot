@@ -43,6 +43,12 @@ import {
   audit,
 } from './audit.js';
 
+import {
+  commitReservation,
+  recordTradeCompleted,
+  reserveTrade,
+} from './risk.js';
+
 async function recoverPendingBuy(
   rpcPool: RpcPool,
   pending: PendingBuyState
@@ -76,6 +82,24 @@ async function recoverPendingBuy(
   const purchasedAmount =
     currentBalance - balanceBefore;
 
+  if (
+    pending.riskReservationId
+  ) {
+    const currentSolBalance =
+      await rpcPool.call(
+        (connection) =>
+          connection.getBalance(
+            config.walletPublicKey,
+            'confirmed'
+          )
+      );
+
+    await commitReservation(
+      pending.riskReservationId,
+      BigInt(currentSolBalance)
+    );
+  }
+
   const recovered: OpenPositionState = {
     version: 2,
     status: 'open',
@@ -94,6 +118,8 @@ async function recoverPendingBuy(
       pending.createdAt,
     updatedAt:
       new Date().toISOString(),
+    riskReservationId:
+      pending.riskReservationId,
   };
 
   await saveState(recovered);
@@ -224,6 +250,15 @@ async function main(): Promise<void> {
     );
   }
 
+  const riskReservation =
+    config.liveTrading
+      ? await reserveTrade(
+          outputMint.toBase58(),
+          buyLamports,
+          BigInt(solBalance)
+        )
+      : null;
+
   const balanceBefore =
     await getBalanceWithFailover(
       rpcPool,
@@ -256,6 +291,8 @@ async function main(): Promise<void> {
       buyLamports.toString(),
     createdAt:
       new Date().toISOString(),
+    riskReservationId:
+      riskReservation?.id,
   };
 
   /*
@@ -345,6 +382,24 @@ async function main(): Promise<void> {
     }
   );
 
+  if (
+    pendingState.riskReservationId
+  ) {
+    const currentSolBalance =
+      await rpcPool.call(
+        (connection) =>
+          connection.getBalance(
+            config.walletPublicKey,
+            'confirmed'
+          )
+      );
+
+    await commitReservation(
+      pendingState.riskReservationId,
+      BigInt(currentSolBalance)
+    );
+  }
+
   const now = new Date().toISOString();
 
   const openPosition: OpenPositionState = {
@@ -363,6 +418,8 @@ async function main(): Promise<void> {
     createdAt:
       pendingState.createdAt,
     updatedAt: now,
+    riskReservationId:
+      pendingState.riskReservationId,
   };
 
   await saveState(openPosition);
@@ -385,6 +442,21 @@ async function main(): Promise<void> {
       mint:
         outputMint.toBase58(),
     }
+  );
+
+  const endingSolBalance =
+    await rpcPool.call(
+      (connection) =>
+        connection.getBalance(
+          config.walletPublicKey,
+          'confirmed'
+        )
+    );
+
+  await recordTradeCompleted(
+    pendingState.riskReservationId ??
+      buySignature,
+    BigInt(endingSolBalance)
   );
 }
 

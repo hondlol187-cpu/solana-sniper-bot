@@ -16,7 +16,8 @@
     "sniper:watch": "tsx sniper/watch.ts",
     "sniper:candidates": "tsx sniper/candidates.ts",
     "sniper:replay": "tsx sniper/replay.ts",
-    "sniper:execute-approved": "tsx sniper/execute-approved.ts"
+    "sniper:execute-approved": "tsx sniper/execute-approved.ts",
+    "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -21,6 +21,8 @@ export interface PendingBuyState {
 
   entryLamports: string;
   createdAt: string;
+
+  riskReservationId?: string;
 }
 
 export interface OpenPositionState {
@@ -49,6 +51,8 @@ export interface OpenPositionState {
   buySignature: string;
   createdAt: string;
   updatedAt: string;
+
+  riskReservationId?: string;
 }
 
 export type BotState =
@@ -181,6 +185,11 @@ function validateState(
       balanceBeforeRaw,
       entryLamports,
       createdAt,
+      riskReservationId:
+        typeof candidate.riskReservationId ===
+          'string'
+          ? candidate.riskReservationId
+          : undefined,
     };
   }
 
@@ -247,6 +256,11 @@ function validateState(
     buySignature,
     createdAt,
     updatedAt,
+    riskReservationId:
+      typeof candidate.riskReservationId ===
+        'string'
+        ? candidate.riskReservationId
+        : undefined,
   };
 }
 

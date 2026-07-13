@@ -407,6 +407,31 @@ export const config = {
     10,
     100_000
   ),
+
+  riskFile:
+    process.env.RISK_FILE?.trim() ||
+    './sniper-risk.json',
+
+  maxDailySpendSol: numberEnv(
+    'MAX_DAILY_SPEND_SOL',
+    0.2,
+    0.001,
+    100
+  ),
+
+  maxDailyTrades: numberEnv(
+    'MAX_DAILY_TRADES',
+    3,
+    1,
+    1_000
+  ),
+
+  maxDailyDrawdownSol: numberEnv(
+    'MAX_DAILY_DRAWDOWN_SOL',
+    0.1,
+    0.001,
+    100
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

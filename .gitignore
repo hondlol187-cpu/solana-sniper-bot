@@ -77,3 +77,5 @@ sniper-bot.lock
 sniper-audit.jsonl
 sniper-candidates.json
 sniper-candidates.json.tmp
+sniper-risk.json
+sniper-risk.json.tmp
