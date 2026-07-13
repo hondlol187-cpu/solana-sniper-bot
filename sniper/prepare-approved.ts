@@ -252,6 +252,12 @@ async function main(): Promise<void> {
           approvalAssessment.liquidityDropPct,
       });
 
+  const planPath =
+    executionPlanModule
+      .getApprovedExecutionPlanPath(
+        plan.planId
+      );
+
   await auditModule.audit(
     'candidate.execution.plan-created',
     {
@@ -271,11 +277,10 @@ async function main(): Promise<void> {
         approvalAssessment.quoteAgeMs,
       liquidityDropPct:
         approvalAssessment.liquidityDropPct,
+      planId: plan.planId,
       planSha256:
         plan.sha256,
-      planFile:
-        configModule.config
-          .approvedExecutionPlanFile,
+      planPath,
     }
   );
 
@@ -289,9 +294,14 @@ async function main(): Promise<void> {
       `ApprovalOK: ${approvalAssessment.ok}`,
       `QuoteAgeMs: ${approvalAssessment.quoteAgeMs}`,
       `LiquidityDropPct: ${approvalAssessment.liquidityDropPct ?? '[n/a]'}`,
+      `PlanId: ${plan.planId}`,
       `PlanSha256: ${plan.sha256}`,
-      `PlanFile: ${configModule.config.approvedExecutionPlanFile}`,
+      `PlanPath: ${planPath}`,
     ].join(' | ')
+  );
+
+  console.log(
+    `PLAN_ID=${plan.planId}`
   );
 
   if (!routeAssessment.ok) {

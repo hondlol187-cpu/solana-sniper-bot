@@ -10,15 +10,6 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-/*
- * All tests in this file share a single temp directory
- * and a single APPROVED_EXECUTION_PLAN_FILE env value.
- * This is required because sniper/config.ts captures env
- * vars at module-load time, and dynamic import() returns
- * the cached module on subsequent calls. If each test
- * pointed to a different temp path, the cached config
- * would still reference the first test's path.
- */
 let configured = false;
 
 async function configureEnvironment() {
@@ -35,8 +26,8 @@ async function configureEnvironment() {
     '11111111111111111111111111111111';
   process.env.OUTPUT_MINT =
     'So11111111111111111111111111111111111111112';
-  process.env.APPROVED_EXECUTION_PLAN_FILE =
-    join(dir, 'approved-plan.json');
+  process.env.APPROVED_EXECUTION_PLAN_DIR =
+    join(dir, 'approved-plans');
   process.env.MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS =
     '30';
 
@@ -118,11 +109,17 @@ test(
       );
 
     const loaded =
-      await loadApprovedExecutionPlan();
+      await loadApprovedExecutionPlan(
+        written.planId
+      );
 
     assert.equal(
       loaded.version,
       1
+    );
+    assert.equal(
+      loaded.planId,
+      written.planId
     );
     assert.deepEqual(
       loaded.payload,
@@ -143,20 +140,20 @@ test(
     const {
       writeApprovedExecutionPlan,
       loadApprovedExecutionPlan,
+      getApprovedExecutionPlanPath,
     } = await import(
       '../sniper/execution-plan.js'
     );
 
-    const payload =
-      buildPayload();
-
-    await writeApprovedExecutionPlan(
-      payload
-    );
+    const written =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
 
     const path =
-      process.env
-        .APPROVED_EXECUTION_PLAN_FILE!;
+      getApprovedExecutionPlanPath(
+        written.planId
+      );
 
     const parsed = JSON.parse(
       await readFile(path, 'utf8')
@@ -173,7 +170,9 @@ test(
 
     await assert.rejects(
       () =>
-        loadApprovedExecutionPlan(),
+        loadApprovedExecutionPlan(
+          written.planId
+        ),
       /hash mismatch/
     );
   }
@@ -192,12 +191,15 @@ test(
       '../sniper/execution-plan.js'
     );
 
-    await writeApprovedExecutionPlan(
-      buildPayload()
-    );
+    const written =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
 
     const file =
-      await loadApprovedExecutionPlan();
+      await loadApprovedExecutionPlan(
+        written.planId
+      );
 
     assert.throws(
       () =>
@@ -206,6 +208,40 @@ test(
           1_000_000 + 31_000
         ),
       /too old/
+    );
+  }
+);
+
+test(
+  'creates unique plan ids for different timestamps',
+  async () => {
+    await configureEnvironment();
+
+    const {
+      writeApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const first =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const secondPayload =
+      buildPayload();
+
+    secondPayload.createdAt =
+      new Date(1_000_001).toISOString();
+
+    const second =
+      await writeApprovedExecutionPlan(
+        secondPayload
+      );
+
+    assert.notEqual(
+      first.planId,
+      second.planId
     );
   }
 );

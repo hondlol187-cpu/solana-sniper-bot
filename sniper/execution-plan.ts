@@ -3,10 +3,13 @@ import {
 } from 'node:crypto';
 
 import {
+  mkdir,
+  readFile,
   rename,
   writeFile,
-  readFile,
 } from 'node:fs/promises';
+
+import { join } from 'node:path';
 
 import { config } from './config.js';
 
@@ -52,6 +55,7 @@ export interface ApprovedExecutionPlanPayload {
 
 export interface ApprovedExecutionPlanFile {
   version: 1;
+  planId: string;
   payload: ApprovedExecutionPlanPayload;
   sha256: string;
 }
@@ -92,17 +96,68 @@ function hashPayload(
     .digest('hex');
 }
 
+function buildPlanId(
+  payload: ApprovedExecutionPlanPayload
+): string {
+  const shortHash =
+    createHash('sha256')
+      .update(
+        [
+          payload.signature,
+          payload.exactMint,
+          payload.createdAt,
+          payload.walletPublicKey,
+        ].join('|')
+      )
+      .digest('hex')
+      .slice(0, 16);
+
+  return [
+    payload.signature.slice(0, 12),
+    payload.exactMint.slice(0, 12),
+    shortHash,
+  ].join('_');
+}
+
+export function getApprovedExecutionPlanPath(
+  planId: string
+): string {
+  return join(
+    config.approvedExecutionPlanDir,
+    `${planId}.json`
+  );
+}
+
+async function ensurePlanDirectory(): Promise<void> {
+  await mkdir(
+    config.approvedExecutionPlanDir,
+    {
+      recursive: true,
+      mode: 0o700,
+    }
+  );
+}
+
 export async function writeApprovedExecutionPlan(
   payload: ApprovedExecutionPlanPayload
 ): Promise<ApprovedExecutionPlanFile> {
+  await ensurePlanDirectory();
+
+  const planId =
+    buildPlanId(payload);
+
   const file: ApprovedExecutionPlanFile = {
     version: 1,
+    planId,
     payload,
     sha256: hashPayload(payload),
   };
 
+  const path =
+    getApprovedExecutionPlanPath(planId);
+
   const temporaryFile =
-    `${config.approvedExecutionPlanFile}.tmp`;
+    `${path}.tmp`;
 
   await writeFile(
     temporaryFile,
@@ -115,15 +170,20 @@ export async function writeApprovedExecutionPlan(
 
   await rename(
     temporaryFile,
-    config.approvedExecutionPlanFile
+    path
   );
 
   return file;
 }
 
-export async function loadApprovedExecutionPlan(): Promise<ApprovedExecutionPlanFile> {
+export async function loadApprovedExecutionPlan(
+  planId: string
+): Promise<ApprovedExecutionPlanFile> {
+  const path =
+    getApprovedExecutionPlanPath(planId);
+
   const content = await readFile(
-    config.approvedExecutionPlanFile,
+    path,
     'utf8'
   );
 
@@ -132,6 +192,7 @@ export async function loadApprovedExecutionPlan(): Promise<ApprovedExecutionPlan
 
   if (
     parsed.version !== 1 ||
+    typeof parsed.planId !== 'string' ||
     !parsed.payload ||
     typeof parsed.sha256 !== 'string'
   ) {
@@ -148,6 +209,12 @@ export async function loadApprovedExecutionPlan(): Promise<ApprovedExecutionPlan
   if (expectedHash !== parsed.sha256) {
     throw new Error(
       'Approved execution plan hash mismatch'
+    );
+  }
+
+  if (parsed.planId !== planId) {
+    throw new Error(
+      'Approved execution plan ID mismatch'
     );
   }
 

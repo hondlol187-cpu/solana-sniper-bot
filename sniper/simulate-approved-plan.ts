@@ -6,6 +6,18 @@ async function main(): Promise<void> {
   process.env.LIVE_TRADING =
     'false';
 
+  const [planId] =
+    process.argv.slice(2);
+
+  if (!planId) {
+    throw new Error(
+      [
+        'Usage:',
+        'npm run sniper:simulate-approved-plan -- <plan-id>',
+      ].join('\n')
+    );
+  }
+
   const [
     executionPlanModule,
     executionPlanPolicyModule,
@@ -22,7 +34,9 @@ async function main(): Promise<void> {
 
   const planFile =
     await executionPlanModule
-      .loadApprovedExecutionPlan();
+      .loadApprovedExecutionPlan(
+        planId
+      );
 
   executionPlanModule
     .validateApprovedExecutionPlanAge(
@@ -122,6 +136,8 @@ async function main(): Promise<void> {
         payload.exactMint,
       approvedPoolAddress:
         payload.approvedPoolAddress,
+      planId:
+        planFile.planId,
       planSha256:
         planFile.sha256,
       environmentOk:
@@ -140,6 +156,7 @@ async function main(): Promise<void> {
       `Pool: ${payload.approvedPoolAddress}`,
       `Wallet: ${payload.walletPublicKey}`,
       `Cluster: ${payload.expectedCluster}`,
+      `PlanId: ${planFile.planId}`,
       `PlanSha256: ${planFile.sha256}`,
       `Result: ${result}`,
       'No transaction was broadcast.',

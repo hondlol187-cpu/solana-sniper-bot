@@ -47,10 +47,22 @@ async function main(): Promise<void> {
       exactMint,
     ],
     {
-      stdio: 'inherit',
       env: process.env,
+      encoding: 'utf8',
     }
   );
+
+  if (prepare.stdout) {
+    process.stdout.write(
+      prepare.stdout
+    );
+  }
+
+  if (prepare.stderr) {
+    process.stderr.write(
+      prepare.stderr
+    );
+  }
 
   if (prepare.status !== 0) {
     process.exitCode =
@@ -58,11 +70,26 @@ async function main(): Promise<void> {
     return;
   }
 
+  const planIdMatch =
+    prepare.stdout?.match(
+      /PLAN_ID=([A-Za-z0-9_-]+)/
+    );
+
+  if (!planIdMatch) {
+    throw new Error(
+      'prepare-approved did not return a plan ID'
+    );
+  }
+
+  const planId =
+    planIdMatch[1];
+
   const simulate = spawnSync(
     process.execPath,
     [
       'node_modules/tsx/dist/cli.mjs',
       'sniper/simulate-approved-plan.ts',
+      planId,
     ],
     {
       stdio: 'inherit',

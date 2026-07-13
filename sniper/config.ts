@@ -481,9 +481,9 @@ export const config = {
     99
   ),
 
-  approvedExecutionPlanFile:
-    process.env.APPROVED_EXECUTION_PLAN_FILE?.trim() ||
-    './sniper-approved-execution.json',
+  approvedExecutionPlanDir:
+    process.env.APPROVED_EXECUTION_PLAN_DIR?.trim() ||
+    './sniper-approved-plans',
 
   maxApprovedExecutionPlanAgeSeconds: numberEnv(
     'MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS',

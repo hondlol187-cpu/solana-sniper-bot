@@ -2563,3 +2563,108 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
   UI to display risk-ledger + candidate-store + audit-log + plan-file
   remains the obvious next web-side step.
+
+---
+Task ID: 28
+Agent: main (Z.ai Code)
+Task: Make approved execution plans multi-file and concurrency-safe. Plans
+      are now uniquely identified, stored as separate files, lock-safe, and
+      explicitly selected when simulating.
+
+Work Log:
+- Synced to origin/main (HEAD = 8272287 from Task 27).
+- Updated sniper/config.ts: replaced approvedExecutionPlanFile (single
+  file path) with approvedExecutionPlanDir (directory, default
+  ./sniper-approved-plans). Kept maxApprovedExecutionPlanAgeSeconds.
+- Replaced sniper/execution-plan.ts entirely:
+    * ApprovedExecutionPlanFile now has planId field
+    * buildPlanId(payload) = signature[:12]_exactMint[:12]_sha256(signature|exactMint|createdAt|walletPublicKey)[:16]
+      -> unique per (signature, mint, timestamp, wallet)
+    * getApprovedExecutionPlanPath(planId) = join(dir, `${planId}.json`)
+    * ensurePlanDirectory() = mkdir(dir, { recursive: true, mode: 0o700 })
+    * writeApprovedExecutionPlan(payload) -> creates dir, computes planId,
+      atomic write (temp+rename, 0o600), returns { version, planId, payload, sha256 }
+    * loadApprovedExecutionPlan(planId) -> reads file by planId, verifies
+      version + sha256 + planId match (throws "ID mismatch" if file's
+      planId doesn't match the requested planId)
+    * validateApprovedExecutionPlanAge unchanged
+- Updated sniper/prepare-approved.ts:
+    * After writing plan, computes planPath via getApprovedExecutionPlanPath
+    * Audit payload: planId + planPath (replaced planFile)
+    * Console banner: PlanId + PlanPath (replaced PlanFile)
+    * Prints `PLAN_ID=${plan.planId}` as a machine-readable line for the
+      execute-approved wrapper to parse
+- Updated sniper/simulate-approved-plan.ts:
+    * CLI now requires <plan-id> arg: `npm run sniper:simulate-approved-plan -- <plan-id>`
+    * loadApprovedExecutionPlan(planId) instead of no-arg
+    * Audit payload: planId added
+    * Console banner: PlanId added
+- Updated sniper/execute-approved.ts wrapper:
+    * Spawns prepare-approved with encoding: 'utf8' (captures stdout)
+    * Writes prepare stdout/stderr to parent stdout/stderr
+    * Parses PLAN_ID=([A-Za-z0-9_-]+) from prepare stdout
+    * Throws "prepare-approved did not return a plan ID" if not found
+    * Spawns simulate-approved-plan with the captured planId
+- Updated tests/execution-plan.test.ts:
+    * configureEnvironment sets APPROVED_EXECUTION_PLAN_DIR instead of
+      APPROVED_EXECUTION_PLAN_FILE
+    * buildPayload unchanged (already has all fields)
+    * "writes and reloads a valid plan": loadApprovedExecutionPlan(written.planId),
+      asserts loaded.planId === written.planId
+    * "rejects tampered plan file": getApprovedExecutionPlanPath(written.planId),
+      loadApprovedExecutionPlan(written.planId)
+    * "rejects stale plan age": loadApprovedExecutionPlan(written.planId)
+    * NEW test "creates unique plan ids for different timestamps": writes
+      two plans with different createdAt, asserts planIds differ
+- Updated .env.example: APPROVED_EXECUTION_PLAN_DIR replaces
+  APPROVED_EXECUTION_PLAN_FILE
+- Updated .gitignore: sniper-approved-plans/ replaces
+  sniper-approved-execution.json + .tmp
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       36 passed, 0 failed (35 existing + 1 new)
+
+Stage Summary:
+- Plans are now stored as separate files in a directory (default
+  ./sniper-approved-plans/), each named `<planId>.json` where planId
+  is derived from signature + mint + createdAt + wallet. Preparing a
+  second candidate no longer overwrites the first plan.
+- simulate-approved-plan requires an explicit plan ID argument, so there
+  is no ambiguity about which plan to simulate.
+- The execute-approved wrapper captures the plan ID from prepare's stdout
+  (PLAN_ID=... line) and passes it to simulate, so the two-step flow
+  still works as a single command.
+- Each plan file has its own .tmp file during atomic write, so concurrent
+  prepare/simulate flows cannot race on the same file. The planId-in-file
+  check (parsed.planId === requested planId) catches any path-substitution
+  attempt.
+- Audit trail now includes planId + planPath for both prepare and simulate,
+  making it easy to trace which plan was created and which was simulated.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (36 tests). CI green.
+- Eight CLIs available (simulate-approved-plan now requires <plan-id>):
+    npm run sniper:watch                   - live signal -> decode -> validate -> queue
+    npm run sniper:candidates              - list / approve / reject queued candidates
+    npm run sniper:replay                  - replay a historical tx through the pipeline
+    npm run sniper:prepare-approved        - revalidate + quote + assess + freeze plan
+                                             (prints PLAN_ID=... for wrapper)
+    npm run sniper:simulate-approved-plan -- <plan-id>
+                                           - load plan + verify + simulate
+    npm run sniper:execute-approved        - wrapper: prepare + simulate (dry-run only)
+    npm run sniper:risk                    - status / release / reset the risk ledger
+    npm run verify                         - typecheck + lint + 36 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live approved-candidate execution is still blocked. The next major
+  batch should add a direct pool-bound executor that consumes a frozen
+  plan file end-to-end before re-enabling --live.
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log + plan-dir
+  remains the obvious next web-side step.
