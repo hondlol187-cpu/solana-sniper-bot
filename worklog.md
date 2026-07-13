@@ -1892,3 +1892,131 @@ Unresolved issues / risks / next-phase priorities:
 - The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
   UI to display risk-ledger + candidate-store + audit-log (Option B
   from the previous proposal) remains the obvious next web-side step.
+
+---
+Task ID: 21
+Agent: main (Z.ai Code)
+Task: Add secure wallet-key loading. Private key file support with 0600
+      permission enforcement, symlink rejection, owner validation, base58
+      and JSON keypair formats. Environment private keys disabled by
+      default. Secret buffers cleared after loading. Automated tests.
+
+Work Log:
+- Synced to origin/main (HEAD = 6e37bd6 from Task 20).
+- Created sniper/key-loader.ts:
+    * KeyLoaderOptions { liveTrading, privateKeyEnv?, privateKeyFile?,
+      allowEnvironmentPrivateKey }
+    * loadConfiguredKeypair(options) -> Keypair | null
+        - Throws if both PRIVATE_KEY and PRIVATE_KEY_FILE are set
+        - If PRIVATE_KEY_FILE set:
+            * assertSecureKeyFile: rejects symlinks (lstat), rejects
+              non-regular files, rejects empty files, rejects files
+              >4KB, rejects mode & 0o077 != 0 (POSIX only), rejects
+              files not owned by current uid (POSIX only)
+            * readFileSync with utf8 encoding
+            * keypairFromContent
+        - If only PRIVATE_KEY env set:
+            * Throws unless allowEnvironmentPrivateKey is true
+            * keypairFromContent
+        - If neither set:
+            * Throws if liveTrading is true
+            * Returns null otherwise (dry-run mode)
+    * parseSecret(content): trims, detects JSON-array format vs base58,
+      decodes, verifies 64-byte length. Fills buffer with 0 on failure.
+    * parseJsonSecret(content): JSON.parse, requires array of length 64,
+      validates each byte is integer 0..255.
+    * keypairFromContent(content): parseSecret -> Keypair.fromSecretKey.
+      In finally block, secret.fill(0) to clear raw bytes from memory.
+- Updated sniper/config.ts:
+    * Removed `import bs58 from 'bs58'`
+    * Removed `Keypair` from `@solana/web3.js` import (now only PublicKey)
+    * Added `import { loadConfiguredKeypair } from './key-loader.js'`
+    * Deleted optionalKeypair() function entirely
+    * Replaced `const keypair = optionalKeypair()` + the liveTrading
+      guard block with:
+        const allowEnvironmentPrivateKey = booleanEnv('ALLOW_ENV_PRIVATE_KEY', false);
+        const keypair = loadConfiguredKeypair({
+          liveTrading,
+          privateKeyEnv: process.env.PRIVATE_KEY,
+          privateKeyFile: process.env.PRIVATE_KEY_FILE,
+          allowEnvironmentPrivateKey,
+        });
+      (loadConfiguredKeypair handles the liveTrading guard internally)
+    * Added config.privateKeySource: 'file' | 'environment' | 'none'
+      (based on which path was used, derived from process.env). Not
+      logged — only available programmatically.
+    * Preserved the existing public/private wallet mismatch validation.
+- Updated .env.example:
+    * Replaced "PRIVATE_KEY=" section with:
+        PRIVATE_KEY_FILE=./burner-wallet.key
+        PRIVATE_KEY=
+        ALLOW_ENV_PRIVATE_KEY=false
+      with comments explaining chmod 600 requirement and the two
+      accepted file formats (base58 string or JSON array of 64 bytes).
+- Updated .gitignore:
+    * Added burner-wallet.key and *.key.json (alongside existing
+      /*.key and /*.keypair rules).
+- Created tests/key-loader.test.ts (6 tests, no RPC):
+    1. loads a secure base58 key file (happy path, 0600, verifies
+       publicKey matches)
+    2. loads a secure JSON key file (JSON array format, 0600, verifies
+       publicKey matches)
+    3. rejects group-readable key files (chmod 640 -> throws
+       "permissions are too open")
+    4. rejects symbolic-link key files (symlink -> throws "must not be
+       a symbolic link")
+    5. rejects environment key by default (PRIVATE_KEY env without
+       ALLOW_ENV_PRIVATE_KEY=true -> throws "Environment private keys
+       are disabled")
+    6. dry-run works without any private key (liveTrading=false, no
+       env, no file -> returns null)
+  Tests use mkdtemp for isolation, skip POSIX-only tests on Windows.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       17 passed, 0 failed (11 existing + 6 new)
+
+Stage Summary:
+- The bot no longer accepts raw private keys in .env by default. The
+  recommended path is PRIVATE_KEY_FILE pointing to a 0600-permission
+  regular file owned by the current user, containing either a base58
+  string or a JSON array of 64 bytes.
+- Environment keys (PRIVATE_KEY) still work for migration purposes if
+  ALLOW_ENV_PRIVATE_KEY=true is set explicitly, but this is discouraged
+  and clearly commented as temporary.
+- Secret bytes are zeroed in memory immediately after Keypair
+  construction, reducing the window for memory inspection.
+- Symlinks are rejected to prevent path-substitution attacks.
+- Owner validation prevents loading a key file owned by another user
+  (e.g. a shared system user).
+- The file-size cap (4KB) prevents accidental loading of large files
+  that might be miscategorized.
+- config.privateKeySource is available programmatically as
+  'file' | 'environment' | 'none' but is never logged.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (17 tests). CI green.
+  Six CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run or live-execute an approved candidate
+    npm run sniper:risk               - status / release / reset the risk ledger
+    npm run verify                    - typecheck + lint + 17 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- Live trading now requires creating a burner-wallet.key file with
+  chmod 600 before setting LIVE_TRADING=true. Users upgrading from
+  the old PRIVATE_KEY env-var flow will need to migrate (set
+  ALLOW_ENV_PRIVATE_KEY=true temporarily, or move the key to a file).
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log (Option B
+  from earlier proposal) remains the obvious next web-side step.
+- Test coverage is now 17 tests. Future batches could add tests for
+  candidate-store transitions, pool-validator preflight, and
+  execute-approved CLI arg-validation.

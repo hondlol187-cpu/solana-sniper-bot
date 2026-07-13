@@ -71,6 +71,8 @@ server.log
 /sniper/.env.local
 /*.key
 /*.keypair
+burner-wallet.key
+*.key.json
 sniper-position.json
 sniper-position.json.tmp
 sniper-bot.lock

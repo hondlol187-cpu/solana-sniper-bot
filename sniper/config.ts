@@ -1,7 +1,10 @@
 import 'dotenv/config';
 
-import bs58 from 'bs58';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
+
+import {
+  loadConfiguredKeypair,
+} from './key-loader.js';
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -39,20 +42,6 @@ function booleanEnv(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true or false`);
 }
 
-function optionalKeypair(): Keypair | null {
-  const raw = process.env.PRIVATE_KEY?.trim();
-
-  if (!raw) return null;
-
-  try {
-    return Keypair.fromSecretKey(bs58.decode(raw));
-  } catch {
-    throw new Error(
-      'PRIVATE_KEY is not a valid base58 Solana secret key'
-    );
-  }
-}
-
 function enumEnv<T extends string>(
   name: string,
   fallback: T,
@@ -72,13 +61,25 @@ function enumEnv<T extends string>(
 }
 
 const liveTrading = booleanEnv('LIVE_TRADING', false);
-const keypair = optionalKeypair();
 
-if (liveTrading && !keypair) {
-  throw new Error(
-    'PRIVATE_KEY is required when LIVE_TRADING=true'
+const allowEnvironmentPrivateKey =
+  booleanEnv(
+    'ALLOW_ENV_PRIVATE_KEY',
+    false
   );
-}
+
+const keypair =
+  loadConfiguredKeypair({
+    liveTrading,
+
+    privateKeyEnv:
+      process.env.PRIVATE_KEY,
+
+    privateKeyFile:
+      process.env.PRIVATE_KEY_FILE,
+
+    allowEnvironmentPrivateKey,
+  });
 
 let walletPublicKey: PublicKey;
 
@@ -177,6 +178,13 @@ export const config = {
   liveTrading,
   keypair,
   walletPublicKey,
+  privateKeySource:
+    keypair
+      ? process.env
+          .PRIVATE_KEY_FILE
+        ? 'file'
+        : 'environment'
+      : 'none',
   outputMint: required('OUTPUT_MINT'),
 
   buyAmountSol: numberEnv(
