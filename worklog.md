@@ -1795,3 +1795,100 @@ Stage Summary:
   it from https://github.com/settings/tokens (it has been in chat
   history 5 times). The new PAT (ghp_Jmp1...) is also in chat history
   once now and should be revoked/rotated after the next push.
+
+---
+Task ID: 20
+Agent: main (Z.ai Code)
+Task: Add cross-process file locking for candidate-store and risk-ledger
+      JSON files. Prevents corruption when watcher / candidates CLI /
+      risk CLI / execute-approved run simultaneously.
+
+Work Log:
+- Synced to origin/main (HEAD = 850270c from Task 19).
+- Added config.fileLockTimeoutMs (default 10000, range 500..120000),
+  config.fileLockRetryMs (default 50, range 10..5000),
+  config.fileLockStaleSeconds (default 120, range 10..86400) to
+  sniper/config.ts. Wired to FILE_LOCK_TIMEOUT_MS, FILE_LOCK_RETRY_MS,
+  FILE_LOCK_STALE_SECONDS env vars.
+- Created sniper/file-lock.ts:
+    * acquireFileLock(targetPath) -> release callback
+      Uses O_CREAT|O_EXCL (open with 'wx' flag) for atomic lock creation.
+      Lock file contains { pid, token (UUID), createdAt, target }.
+      On EEXIST: reads existing lock, checks staleness, sleeps fileLockRetryMs.
+      Stale detection: age > fileLockStaleSeconds AND process.kill(pid, 0)
+      fails (or returns ESRCH). Re-reads before deletion to avoid removing
+      a replacement lock. Audits file-lock.stale.removed.
+      Release is idempotent and token-checked (only the owner can release).
+      Timeout throws with helpful "Held by PID X since Y" message.
+    * withFileLock(targetPath, operation) -> T
+      Convenience wrapper: acquire, run, release (in finally).
+- Updated candidate-store.ts serialize(): wraps the operation in
+  withFileLock(config.candidateStoreFile, ...). Preserves in-process
+  Promise-queue ordering AND adds cross-process protection.
+- Updated risk.ts serialize(): wraps in withFileLock(config.riskFile, ...).
+  Same dual-layer protection.
+- Created tests/file-lock.test.ts (2 tests, no RPC):
+    1. serializes concurrent operations - launches two withFileLock calls
+       in parallel, verifies the events array is [first-start, first-end,
+       second-start, second-end] (i.e. second waits for first to release)
+    2. releases lock when operation throws - verifies that a thrown
+       operation still releases the lock, and a subsequent acquire
+       succeeds, and the lock file is gone (ENOENT) afterward
+- Added FILE_LOCK_TIMEOUT_MS, FILE_LOCK_RETRY_MS, FILE_LOCK_STALE_SECONDS
+  to .env.example.
+- Added sniper-candidates.json.lock and sniper-risk.json.lock to .gitignore.
+
+Verification:
+- rm -f .tsbuildinfo && npm run verify  -> exit 0
+  - typecheck:  exit 0
+  - lint:       exit 0
+  - test:       11 passed, 0 failed (9 existing + 2 new)
+- Additional cross-process stress test: launched 5 separate Node
+  processes in parallel, each calling reserveTrade + commitReservation
+  against the SAME risk file. All 5 completed cleanly. Final state:
+    spentLamports = 50000000 (exactly 5 x 0.01 SOL — no lost updates)
+    committedReservationIds.length = 5 (all committed)
+    reservations.length = 0 (no orphans)
+    haltedReason = undefined (no false halt)
+  Without the lock, concurrent writes would have overwritten each other
+  and the final spentLamports would have been ~10000000 (only the last
+  write would survive) or the JSON file would have been corrupted.
+  With the lock, the final state is exactly correct.
+
+Stage Summary:
+- The candidate and risk JSON files are now safe under concurrent
+  multi-process access. The watcher can be running while the user
+  invokes sniper:candidates or sniper:risk, and execute-approved can
+  run while both are active. All operations serialize through the
+  same .lock file.
+- Stale locks are auto-removed when the holding process is gone and
+  the lock age exceeds fileLockStaleSeconds. This means a crashed
+  process won't permanently block the file.
+- The lock file is owned 0600 by the running user. Token-checked
+  release means a process can only release its own lock.
+
+Current project status:
+- Stable, type-safe, lint-clean, test-clean (11 tests). CI green.
+  Six CLIs available:
+    npm run sniper:watch              - live signal -> decode -> validate -> queue
+    npm run sniper:candidates         - list / approve / reject queued candidates
+    npm run sniper:replay             - replay a historical tx through the pipeline
+    npm run sniper:execute-approved   - dry-run or live-execute an approved candidate
+    npm run sniper:risk               - status / release / reset the risk ledger
+    npm run verify                    - typecheck + lint + 11 tests
+- CI runs on every push to main and every PR.
+
+Unresolved issues / risks / next-phase priorities:
+- The PAT ghp_Jmp1... is in chat history. User should revoke/rotate
+  after this push.
+- The cross-process lock uses the filesystem, so it works across
+  separate machines only if they share the same filesystem (NFS, etc.).
+  For a single-machine deployment this is fine. For multi-machine
+  scaling, a Redis-based or Postgres-based lock would be needed.
+- Test coverage is now 11 tests. Future batches could add tests for
+  candidate-store transitions, pool-validator preflight, and
+  execute-approved CLI arg-validation (Option A from the previous
+  proposal still stands).
+- The dashboard (Next.js) still uses SIMULATED swaps. Wiring the web
+  UI to display risk-ledger + candidate-store + audit-log (Option B
+  from the previous proposal) remains the obvious next web-side step.

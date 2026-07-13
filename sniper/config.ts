@@ -432,6 +432,27 @@ export const config = {
     0.001,
     100
   ),
+
+  fileLockTimeoutMs: numberEnv(
+    'FILE_LOCK_TIMEOUT_MS',
+    10_000,
+    500,
+    120_000
+  ),
+
+  fileLockRetryMs: numberEnv(
+    'FILE_LOCK_RETRY_MS',
+    50,
+    10,
+    5_000
+  ),
+
+  fileLockStaleSeconds: numberEnv(
+    'FILE_LOCK_STALE_SECONDS',
+    120,
+    10,
+    86_400
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

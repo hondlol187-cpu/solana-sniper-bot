@@ -10,6 +10,10 @@ import {
 import { config } from './config.js';
 import { audit } from './audit.js';
 
+import {
+  withFileLock,
+} from './file-lock.js';
+
 export interface RiskReservation {
   id: string;
   mint: string;
@@ -41,10 +45,16 @@ let modificationQueue:
 function serialize<T>(
   operation: () => Promise<T>
 ): Promise<T> {
+  const guardedOperation = () =>
+    withFileLock(
+      config.riskFile,
+      operation
+    );
+
   const run =
     modificationQueue.then(
-      operation,
-      operation
+      guardedOperation,
+      guardedOperation
     );
 
   modificationQueue = run.then(
