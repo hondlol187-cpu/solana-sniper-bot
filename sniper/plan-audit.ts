@@ -1,14 +1,22 @@
 import {
+  createHash,
+} from 'node:crypto';
+
+import {
   mkdir,
   readFile,
   appendFile,
   chmod,
+  readdir,
+  rename,
+  writeFile,
 } from 'node:fs/promises';
 
 import { join } from 'node:path';
 
 import { config } from './config.js';
 import { audit } from './audit.js';
+import { withFileLock } from './file-lock.js';
 
 import type { ApprovedExecutionPlanFile } from './execution-plan.js';
 
@@ -239,6 +247,18 @@ export async function auditPlanDeleted(
  */
 
 export interface PlanTombstone {
+  /*
+   * Hash-chain fields for tamper-evident retention.
+   * sequence starts at 1 and increments monotonically.
+   * previousHash is the entryHash of the preceding
+   * tombstone (null for the first entry).
+   * entryHash is sha256(stableStringify({ all fields
+   * except entryHash })).
+   */
+  sequence: number;
+  previousHash: string | null;
+  entryHash: string;
+
   planId: string;
   finalStatus: string;
   deletedAt: string;
@@ -256,6 +276,22 @@ function getTombstonePath(): string {
   );
 }
 
+function getPlanTombstoneDir(): string {
+  return join(
+    config.approvedExecutionPlanDir,
+    'tombstones'
+  );
+}
+
+function getPlanTombstonePath(
+  planId: string
+): string {
+  return join(
+    getPlanTombstoneDir(),
+    `${planId}.json`
+  );
+}
+
 async function ensureTombstoneDirectory(): Promise<void> {
   await mkdir(
     config.approvedExecutionPlanDir,
@@ -263,6 +299,64 @@ async function ensureTombstoneDirectory(): Promise<void> {
       recursive: true,
       mode: 0o700,
     }
+  );
+}
+
+async function ensurePlanTombstoneDirectory(): Promise<void> {
+  await mkdir(
+    getPlanTombstoneDir(),
+    {
+      recursive: true,
+      mode: 0o700,
+    }
+  );
+}
+
+/*
+ * Stable stringify for hash-chain computation.
+ * Same algorithm as execution-plan.ts but local to
+ * this module to avoid a circular import.
+ */
+function stableStringify(
+  value: unknown
+): string {
+  if (
+    value === null ||
+    typeof value !== 'object'
+  ) {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+
+  const entries = Object.entries(
+    value as Record<string, unknown>
+  ).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
+
+  return `{${entries
+    .map(
+      ([key, item]) =>
+        `${JSON.stringify(key)}:${stableStringify(item)}`
+    )
+    .join(',')}}`;
+}
+
+function computeEntryHash(
+  tombstone: Omit<PlanTombstone, 'entryHash'>
+): string {
+  return createHash('sha256')
+    .update(stableStringify(tombstone))
+    .digest('hex');
+}
+
+function getLedgerLockPath(): string {
+  return join(
+    config.approvedExecutionPlanDir,
+    'tombstones.lock'
   );
 }
 
@@ -288,12 +382,16 @@ export async function writePlanTombstone(
 export async function readPlanTombstones(): Promise<
   PlanTombstone[]
 > {
-  let content: string;
+  /*
+   * Primary source of truth: per-plan tombstone files in
+   * the tombstones/ subdirectory. Each file is a single
+   * JSON object (not JSONL), written atomically.
+   */
+  let entries: string[];
 
   try {
-    content = await readFile(
-      getTombstonePath(),
-      'utf8'
+    entries = await readdir(
+      getPlanTombstoneDir()
     );
   } catch {
     return [];
@@ -302,25 +400,44 @@ export async function readPlanTombstones(): Promise<
   const tombstones: PlanTombstone[] =
     [];
 
-  for (const line of content.split(
-    '\n'
-  )) {
-    const trimmed = line.trim();
-
-    if (!trimmed) continue;
+  for (const name of entries) {
+    if (
+      !name.endsWith('.json') ||
+      name.endsWith('.tmp')
+    ) {
+      continue;
+    }
 
     try {
+      const content = await readFile(
+        join(getPlanTombstoneDir(), name),
+        'utf8'
+      );
+
       tombstones.push(
-        JSON.parse(trimmed) as PlanTombstone
+        JSON.parse(content) as PlanTombstone
       );
     } catch {
       /*
-       * Skip malformed lines — tombstones are
-       * append-only and a corrupt line should not
-       * prevent reading the rest.
+       * Skip malformed individual tombstones —
+       * a corrupt file should not prevent reading
+       * the rest.
        */
     }
   }
+
+  tombstones.sort((a, b) => {
+    const aMs = Date.parse(a.deletedAt);
+    const bMs = Date.parse(b.deletedAt);
+
+    if (Number.isFinite(aMs) && Number.isFinite(bMs)) {
+      return aMs - bMs;
+    }
+
+    return a.planId.localeCompare(
+      b.planId
+    );
+  });
 
   return tombstones;
 }
@@ -329,30 +446,274 @@ export async function readPlanTombstones(): Promise<
  * Write a tombstone for a plan that is about to be deleted,
  * then audit the deletion. Called by deleteApprovedExecutionPlan
  * and prune before the plan file is removed.
+ *
+ * This now delegates to recordPlanDeletionOnce for hash-chain
+ * consistency. The legacy non-idempotent JSONL-only path is
+ * no longer used.
  */
 export async function recordPlanDeletion(
   file: ApprovedExecutionPlanFile,
   deleteReason: string
 ): Promise<void> {
-  await writePlanTombstone({
-    planId: file.planId,
-    finalStatus: file.state.status,
-    deletedAt:
-      new Date().toISOString(),
-    deleteReason,
-    sha256: file.sha256,
-    version: file.version,
-    walletPublicKey:
-      file.payload.walletPublicKey,
-    expectedCluster:
-      file.payload.expectedCluster,
-  });
-
-  await auditPlanDeleted(
-    file.planId,
-    file.state.status,
-    deleteReason,
-    file.sha256,
-    file.version
+  await recordPlanDeletionOnce(
+    file,
+    deleteReason
   );
+}
+
+/**
+ * Idempotent tombstone recorder. Writes a per-plan tombstone
+ * file at tombstones/<planId>.json using atomic write (temp +
+ * rename, mode 0o600). If the file already exists, this is a
+ * no-op — the plan was already tombstoned.
+ *
+ * Also appends to the JSONL file for convenience and emits the
+ * audit event. The per-plan file is the source of truth; the
+ * JSONL is secondary.
+ *
+ * Does NOT catch persistence errors — callers must handle them
+ * (fail-closed).
+ */
+export async function recordPlanDeletionOnce(
+  file: ApprovedExecutionPlanFile,
+  deleteReason: string
+): Promise<void> {
+  await ensurePlanTombstoneDirectory();
+
+  const perPlanPath =
+    getPlanTombstonePath(file.planId);
+
+  /*
+   * Check if the per-plan tombstone already exists.
+   * If it does, this is a retry — skip the write and
+   * audit. The plan was already tombstoned.
+   */
+  try {
+    await readFile(
+      perPlanPath,
+      'utf8'
+    );
+
+    return;
+  } catch {
+    /*
+     * File does not exist — proceed with write.
+     */
+  }
+
+  /*
+   * Acquire a ledger-level lock so the sequence
+   * number and previousHash are computed atomically
+   * with respect to other concurrent deletions.
+   * The per-plan lock (held by deleteApprovedExecutionPlan)
+   * prevents the same plan from being deleted twice,
+   * but the ledger lock prevents two DIFFERENT plans
+   * from getting the same sequence number.
+   */
+  await withFileLock(
+    getLedgerLockPath(),
+    async () => {
+      /*
+       * Re-check inside the ledger lock in case
+       * another process wrote the tombstone while
+       * we were waiting.
+       */
+      try {
+        await readFile(
+          perPlanPath,
+          'utf8'
+        );
+
+        return;
+      } catch {
+        /* proceed */
+      }
+
+      /*
+       * Read all existing tombstones to find the
+       * last entry's hash and sequence number.
+       */
+      const existing =
+        await readPlanTombstones();
+
+      const lastEntry =
+        existing.length > 0
+          ? existing[
+              existing.length - 1
+            ]
+          : null;
+
+      const sequence =
+        lastEntry
+          ? lastEntry.sequence + 1
+          : 1;
+
+      const previousHash =
+        lastEntry
+          ? lastEntry.entryHash
+          : null;
+
+      const tombstoneWithoutHash: Omit<
+        PlanTombstone,
+        'entryHash'
+      > = {
+        sequence,
+        previousHash,
+        planId: file.planId,
+        finalStatus: file.state.status,
+        deletedAt:
+          new Date().toISOString(),
+        deleteReason,
+        sha256: file.sha256,
+        version: file.version,
+        walletPublicKey:
+          file.payload.walletPublicKey,
+        expectedCluster:
+          file.payload.expectedCluster,
+      };
+
+      const entryHash =
+        computeEntryHash(
+          tombstoneWithoutHash
+        );
+
+      const tombstone: PlanTombstone = {
+        ...tombstoneWithoutHash,
+        entryHash,
+      };
+
+      const tempPath =
+        `${perPlanPath}.tmp`;
+
+      await writeFile(
+        tempPath,
+        JSON.stringify(tombstone, null, 2),
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+        }
+      );
+
+      await rename(
+        tempPath,
+        perPlanPath
+      );
+
+      /*
+       * Also append to the JSONL file for convenience.
+       */
+      await writePlanTombstone(tombstone);
+
+      await auditPlanDeleted(
+        file.planId,
+        file.state.status,
+        deleteReason,
+        file.sha256,
+        file.version
+      );
+    }
+  );
+}
+
+export interface RetentionLedgerVerification {
+  ok: boolean;
+  entryCount: number;
+  errors: string[];
+}
+
+/**
+ * Verify the tamper-evident hash chain across all
+ * retention tombstones.
+ *
+ * Checks:
+ *   - First entry: sequence === 1, previousHash === null
+ *   - Each subsequent entry: sequence === prev + 1
+ *   - Each entry: previousHash === prev.entryHash
+ *   - Each entry: entryHash === computed hash
+ *
+ * Returns { ok, entryCount, errors }. If ok is false,
+ * errors contains a human-readable description of each
+ * detected problem.
+ */
+export async function verifyPlanRetentionLedger(): Promise<RetentionLedgerVerification> {
+  const tombstones =
+    await readPlanTombstones();
+
+  if (tombstones.length === 0) {
+    return {
+      ok: true,
+      entryCount: 0,
+      errors: [],
+    };
+  }
+
+  /*
+   * Sort by sequence for chain verification.
+   * readPlanTombstones sorts by deletedAt, which
+   * should match but isn't guaranteed.
+   */
+  tombstones.sort(
+    (a, b) => a.sequence - b.sequence
+  );
+
+  const errors: string[] = [];
+
+  let expectedSequence = 1;
+  let expectedPreviousHash: string | null =
+    null;
+
+  for (
+    let i = 0;
+    i < tombstones.length;
+    i++
+  ) {
+    const entry = tombstones[i];
+    const label = `entry[${i}] seq=${entry.sequence} planId=${entry.planId}`;
+
+    /*
+     * Check sequence is contiguous.
+     */
+    if (
+      entry.sequence !== expectedSequence
+    ) {
+      errors.push(
+        `${label}: sequence gap — expected ${expectedSequence}, got ${entry.sequence}`
+      );
+    }
+
+    /*
+     * Check previousHash links to the prior entry.
+     */
+    if (
+      entry.previousHash !==
+      expectedPreviousHash
+    ) {
+      errors.push(
+        `${label}: previousHash mismatch — expected ${expectedPreviousHash ?? 'null'}, got ${entry.previousHash ?? 'null'}`
+      );
+    }
+
+    /*
+     * Check entryHash is correct.
+     */
+    const { entryHash, ...rest } = entry;
+    const computedHash =
+      computeEntryHash(rest);
+
+    if (computedHash !== entryHash) {
+      errors.push(
+        `${label}: entryHash mismatch — expected ${computedHash.slice(0, 16)}…, got ${entryHash.slice(0, 16)}…`
+      );
+    }
+
+    expectedSequence =
+      entry.sequence + 1;
+    expectedPreviousHash = entryHash;
+  }
+
+  return {
+    ok: errors.length === 0,
+    entryCount: tombstones.length,
+    errors,
+  };
 }

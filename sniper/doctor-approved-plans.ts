@@ -13,8 +13,10 @@ async function main(): Promise<void> {
 
   const [
     executionPlanModule,
+    planAuditModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
+    import('./plan-audit.js'),
   ]);
 
   const { valid, invalid } =
@@ -56,20 +58,31 @@ async function main(): Promise<void> {
   }
 
   /*
+   * Also verify retention ledger integrity.
+   */
+  const retentionVerification =
+    await planAuditModule.verifyPlanRetentionLedger();
+
+  /*
    * Health exit codes for CI/cron:
-   *   0 = healthy (no invalid, no stale prepared)
+   *   0 = healthy (no invalid, no stale prepared, retention OK)
    *   1 = invalid plans found
    *   2 = stale prepared plans found
    *   3 = both invalid and stale prepared
+   *   4 = retention ledger integrity failure
+   *   Combinations are additive (e.g. 1+2+4=7).
    */
   const hasInvalid =
     invalid.length > 0;
   const hasStale = stalePrepared > 0;
+  const hasRetentionFailure =
+    !retentionVerification.ok;
 
   let exitCode = 0;
 
   if (hasInvalid) exitCode += 1;
   if (hasStale) exitCode += 2;
+  if (hasRetentionFailure) exitCode += 4;
 
   const report = {
     totalFiles:
@@ -105,6 +118,14 @@ async function main(): Promise<void> {
       healthy: exitCode === 0,
       hasInvalid,
       hasStale,
+      hasRetentionFailure,
+    },
+    retention: {
+      ok: retentionVerification.ok,
+      entryCount:
+        retentionVerification.entryCount,
+      errors:
+        retentionVerification.errors,
     },
   };
 
@@ -162,8 +183,29 @@ async function main(): Promise<void> {
         `Healthy: ${exitCode === 0}`,
         `HasInvalid: ${hasInvalid}`,
         `HasStale: ${hasStale}`,
+        `HasRetentionFailure: ${hasRetentionFailure}`,
       ].join('\n')
     );
+
+    console.log(
+      [
+        '\n--- Retention Ledger ---',
+        `OK: ${retentionVerification.ok}`,
+        `Entries: ${retentionVerification.entryCount}`,
+      ].join('\n')
+    );
+
+    if (
+      retentionVerification.errors.length > 0
+    ) {
+      console.log(
+        `\n  Errors (${retentionVerification.errors.length}):`
+      );
+
+      for (const err of retentionVerification.errors) {
+        console.log(`    ${err}`);
+      }
+    }
 
     if (stalePrepared > 0) {
       console.log(

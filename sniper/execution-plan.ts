@@ -67,6 +67,28 @@ export interface ApprovedExecutionPlanState {
   cancelledAt?: string;
   lastSimulationResult?: string;
   cancellationReason?: string;
+  simulationReceipt?: SimulationReceipt;
+}
+
+export interface SimulationReceipt {
+  transactionMessageSha256: string;
+  serializedTransactionSha256: string;
+
+  recentBlockhash: string;
+  lastValidBlockHeight?: number;
+
+  simulatedAt: string;
+  rpcEndpoint: string;
+  contextSlot: number;
+
+  err: unknown | null;
+  unitsConsumed?: number;
+  logsSha256: string;
+  returnDataSha256?: string;
+
+  walletPublicKey: string;
+  expectedCluster: string;
+  planSha256BeforeSimulation: string;
 }
 
 /**
@@ -433,11 +455,13 @@ export async function deleteApprovedExecutionPlan(
   options: {
     reason?: string;
     recordTombstone?: boolean;
+    allowCorruptDelete?: boolean;
   } = {}
 ): Promise<void> {
   const {
     reason = 'manual-delete',
     recordTombstone = true,
+    allowCorruptDelete = false,
   } = options;
 
   /*
@@ -447,35 +471,62 @@ export async function deleteApprovedExecutionPlan(
   await withFileLock(
     getApprovedExecutionPlanLockTarget(planId),
     async () => {
-      /*
-       * If tombstone recording is enabled, try to load
-       * the plan before deleting so we can preserve its
-       * final state. If load fails (corrupt, missing),
-       * skip the tombstone and just delete the file.
-       */
+      let file:
+        | ApprovedExecutionPlanFile
+        | null = null;
+
       if (recordTombstone) {
         try {
-          const file =
+          file =
             await loadApprovedExecutionPlan(
               planId
             );
-
-          const { recordPlanDeletion } =
-            await import(
-              './plan-audit.js'
-            );
-
-          await recordPlanDeletion(
-            file,
-            reason
-          );
         } catch {
           /*
-           * Plan couldn't be loaded (already gone,
-           * corrupt, etc.) — skip tombstone, just
-           * delete the file.
+           * Plan cannot be loaded (corrupt, missing,
+           * hash mismatch). Do NOT silently delete —
+           * quarantine unless explicitly authorized.
            */
+          if (
+            !allowCorruptDelete
+          ) {
+            throw new Error(
+              'Refusing to delete an invalid plan without explicit authorization'
+            );
+          }
+
+          /*
+           * Caller explicitly authorized corrupt
+           * deletion. Delete without a tombstone.
+           */
+          const path =
+            getApprovedExecutionPlanPath(
+              planId
+            );
+
+          await rm(path, {
+            force: true,
+          });
+
+          return;
         }
+
+        /*
+         * Plan loaded successfully. Record the tombstone
+         * BEFORE deleting the file. This is fail-closed:
+         * if the tombstone write or audit fails (disk
+         * full, permissions, etc.), the deletion is
+         * aborted and the plan remains on disk.
+         */
+        const { recordPlanDeletionOnce } =
+          await import(
+            './plan-audit.js'
+          );
+
+        await recordPlanDeletionOnce(
+          file,
+          reason
+        );
       }
 
       const path =
@@ -521,6 +572,131 @@ export async function markApprovedExecutionPlanSimulated(
           simulatedAt:
             new Date().toISOString(),
           lastSimulationResult: result,
+        },
+        payload: file.payload,
+      });
+    }
+  );
+}
+
+/**
+ * Two-phase simulation receipt commit.
+ *
+ * Phase 1 (caller, outside lock):
+ *   - Load the prepared plan
+ *   - Capture its SHA-256
+ *   - Build + simulate the transaction
+ *   - Construct the SimulationReceipt
+ *
+ * Phase 2 (this function, under lock):
+ *   - Reload the plan
+ *   - Verify status is still 'prepared'
+ *   - Verify current SHA-256 === captured SHA-256
+ *   - Save the receipt and transition to 'simulated'
+ *
+ * This prevents a long RPC request from blocking cancellation
+ * while still preventing stale simulation results from being
+ * committed.
+ *
+ * Fail-closed rules enforced here:
+ *   - status must be 'prepared' (not already simulated/cancelled)
+ *   - current SHA-256 must match the captured pre-simulation SHA-256
+ *   - receipt.err must be null (simulation succeeded)
+ *   - receipt.walletPublicKey must match the plan's wallet
+ *   - receipt.expectedCluster must match the plan's cluster
+ */
+export async function commitSimulationReceipt(
+  planId: string,
+  receipt: SimulationReceipt
+): Promise<ApprovedExecutionPlanFile> {
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(planId),
+    async () => {
+      const file =
+        await loadApprovedExecutionPlan(
+          planId
+        );
+
+      if (file.state.status !== 'prepared') {
+        throw new Error(
+          `Approved execution plan is not reusable; current status is ${file.state.status}`
+        );
+      }
+
+      if (file.sha256 !== receipt.planSha256BeforeSimulation) {
+        throw new Error(
+          'Approved execution plan changed between simulation and commit'
+        );
+      }
+
+      if (receipt.err !== null) {
+        throw new Error(
+          'Simulation returned an error — refusing to commit receipt'
+        );
+      }
+
+      /*
+       * Verify the receipt's simulatedAt is not stale
+       * or in the future. This prevents an old receipt
+       * from being committed long after the simulation.
+       */
+      const simulatedAtMs = Date.parse(
+        receipt.simulatedAt
+      );
+
+      if (!Number.isFinite(simulatedAtMs)) {
+        throw new Error(
+          'Receipt simulatedAt is invalid'
+        );
+      }
+
+      const nowMs = Date.now();
+
+      if (simulatedAtMs > nowMs) {
+        throw new Error(
+          'Receipt simulatedAt is in the future'
+        );
+      }
+
+      const maxAgeMs =
+        config.maxApprovedExecutionPlanAgeSeconds *
+        1_000;
+
+      if (nowMs - simulatedAtMs > maxAgeMs) {
+        throw new Error(
+          'Receipt simulatedAt is too old'
+        );
+      }
+
+      if (
+        receipt.walletPublicKey !==
+        file.payload.walletPublicKey
+      ) {
+        throw new Error(
+          'Receipt wallet does not match plan wallet'
+        );
+      }
+
+      if (
+        receipt.expectedCluster !==
+        file.payload.expectedCluster
+      ) {
+        throw new Error(
+          'Receipt cluster does not match plan cluster'
+        );
+      }
+
+      return saveApprovedExecutionPlanFile({
+        planId: file.planId,
+        state: {
+          ...file.state,
+          status: 'simulated',
+          simulationCount:
+            file.state.simulationCount + 1,
+          simulatedAt:
+            receipt.simulatedAt,
+          lastSimulationResult: 'DRY_RUN',
+          simulationReceipt: receipt,
         },
         payload: file.payload,
       });
@@ -600,31 +776,28 @@ export interface MigrationResult {
 export async function migrateApprovedExecutionPlan(
   planId: string
 ): Promise<MigrationResult> {
-  const loaded =
-    await loadApprovedExecutionPlan(planId);
-
-  if (loaded.diskVersion === 2) {
-    return {
-      planId,
-      migrated: false,
-      fromVersion: 2,
-      toVersion: 2,
-    };
-  }
-
-  await withFileLock(
+  /*
+   * Entire migration happens inside the lock so the
+   * returned result accurately reflects what happened
+   * under the lock. The previous implementation loaded
+   * outside the lock, then re-loaded inside — if another
+   * process migrated the plan between the outer load and
+   * the lock acquisition, the outer function would still
+   * report migrated: true based on the stale outer load.
+   */
+  return withFileLock(
     getApprovedExecutionPlanLockTarget(planId),
     async () => {
-      /*
-       * Re-load inside the lock in case another process
-       * migrated or rewrote the plan between the initial
-       * load and the lock acquisition.
-       */
       const current =
         await loadApprovedExecutionPlan(planId);
 
       if (current.diskVersion === 2) {
-        return;
+        return {
+          planId,
+          migrated: false,
+          fromVersion: 2,
+          toVersion: 2,
+        };
       }
 
       await saveApprovedExecutionPlanFile({
@@ -632,15 +805,15 @@ export async function migrateApprovedExecutionPlan(
         state: current.state,
         payload: current.payload,
       });
+
+      return {
+        planId,
+        migrated: true,
+        fromVersion: current.diskVersion,
+        toVersion: 2,
+      };
     }
   );
-
-  return {
-    planId,
-    migrated: true,
-    fromVersion: loaded.diskVersion,
-    toVersion: 2,
-  };
 }
 
 export function validateApprovedExecutionPlanAge(

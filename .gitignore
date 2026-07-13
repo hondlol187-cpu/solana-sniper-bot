@@ -84,3 +84,7 @@ sniper-risk.json
 sniper-risk.json.tmp
 sniper-risk.json.lock
 sniper-approved-plans/
+# Per-plan tombstone files and ledger lock
+sniper-approved-plans/tombstones/
+sniper-approved-plans/tombstones.lock
+sniper-approved-plans/tombstones.lock.tmp

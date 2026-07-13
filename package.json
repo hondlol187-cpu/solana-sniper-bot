@@ -29,6 +29,7 @@
     "sniper:migrate-approved-plans": "tsx sniper/migrate-approved-plans.ts",
     "sniper:doctor-approved-plans": "tsx sniper/doctor-approved-plans.ts",
     "sniper:history-approved-plans": "tsx sniper/history-approved-plans.ts",
+    "sniper:verify-plan-history": "tsx sniper/verify-plan-history.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

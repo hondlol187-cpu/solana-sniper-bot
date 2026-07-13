@@ -365,6 +365,14 @@ export async function simulateAndSend(
         }
       );
 
+    if (guard.err) {
+      throw new Error(
+        `Transaction simulation failed: ${JSON.stringify(
+          guard.err
+        )}`
+      );
+    }
+
     console.log(
       `DRY RUN: simulated SOL spend ${guard.simulatedSpendLamports} lamports`
     );
@@ -423,6 +431,14 @@ export async function simulateAndSend(
         replaceRecentBlockhash: false,
       }
     );
+
+  if (guard.err) {
+    throw new Error(
+      `Signed simulation failed: ${JSON.stringify(
+        guard.err
+      )}`
+    );
+  }
 
   console.log(
     `Signed simulation passed; SOL spend ${guard.simulatedSpendLamports} lamports`

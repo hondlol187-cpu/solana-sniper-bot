@@ -70,7 +70,8 @@ async function cleanPlanDir() {
   }
 
   /*
-   * Also clear the tombstone file so tests start clean.
+   * Also clear the tombstone file and per-plan tombstone
+   * directory so tests start clean.
    */
   const { readPlanTombstones, writePlanTombstone } =
     await import(
@@ -86,6 +87,19 @@ async function cleanPlanDir() {
 
   await rm(tombstonePath, {
     force: true,
+  });
+
+  /*
+   * Also clean per-plan tombstone files.
+   */
+  const planTombstoneDir = join(
+    process.env.APPROVED_EXECUTION_PLAN_DIR!,
+    'tombstones'
+  );
+
+  await rm(planTombstoneDir, {
+    force: true,
+    recursive: true,
   });
 
   void readPlanTombstones;

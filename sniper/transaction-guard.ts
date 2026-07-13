@@ -15,6 +15,15 @@ export interface SpendGuardResult {
   simulatedBalanceAfter: bigint;
   simulatedSpendLamports: bigint;
   logs: string[];
+
+  /*
+   * Raw simulation details for structured receipts.
+   * err is null when the simulation succeeded.
+   */
+  contextSlot: number;
+  err: unknown | null;
+  unitsConsumed?: number;
+  returnData?: string;
 }
 
 export async function simulateWithSpendGuard(
@@ -54,12 +63,41 @@ export async function simulateWithSpendGuard(
       }
     );
 
-  if (simulation.value.err) {
-    throw new Error(
-      `Transaction simulation failed: ${JSON.stringify(
-        simulation.value.err
-      )}`
-    );
+  const contextSlot =
+    simulation.context.slot;
+
+  const err =
+    simulation.value.err ?? null;
+
+  const logs =
+    simulation.value.logs ?? [];
+
+  const unitsConsumed =
+    simulation.value.unitsConsumed ??
+    undefined;
+
+  const returnData =
+    simulation.value.returnData
+      ?.data?.[0] ?? undefined;
+
+  /*
+   * If the simulation failed, return the error
+   * in the result instead of throwing. Callers
+   * (like simulateAndSend) check err and throw.
+   * This allows receipt-capturing callers to
+   * inspect the error without catching.
+   */
+  if (err) {
+    return {
+      balanceBefore,
+      simulatedBalanceAfter: balanceBefore,
+      simulatedSpendLamports: 0n,
+      logs,
+      contextSlot,
+      err,
+      unitsConsumed,
+      returnData,
+    };
   }
 
   const simulatedWallet =
@@ -101,7 +139,10 @@ export async function simulateWithSpendGuard(
     balanceBefore,
     simulatedBalanceAfter,
     simulatedSpendLamports,
-    logs:
-      simulation.value.logs ?? [],
+    logs,
+    contextSlot,
+    err: null,
+    unitsConsumed,
+    returnData,
   };
 }
