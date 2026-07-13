@@ -200,11 +200,14 @@ async function main(): Promise<void> {
       healthBefore.pending,
     ledgerRecordedBefore:
       healthBefore.ledgerRecorded,
+    auditRecordedBefore:
+      healthBefore.auditRecorded,
     committedButPlanExistsBefore:
       healthBefore.committedButPlanExists,
     recovered: recovery.recovered.length,
     pending: recovery.pending.length,
     conflicts: recovery.conflicts.length,
+    malformed: recovery.malformed.length,
     removedPlans: removedPlans.length,
   };
 
@@ -216,6 +219,7 @@ async function main(): Promise<void> {
           recovered: recovery.recovered,
           pending: recovery.pending,
           conflicts: recovery.conflicts,
+          malformed: recovery.malformed,
           removedPlans,
           summary,
         },
@@ -235,6 +239,9 @@ async function main(): Promise<void> {
     );
     console.log(
       `  Conflicts: ${recovery.conflicts.length}`
+    );
+    console.log(
+      `  Malformed: ${recovery.malformed.length}`
     );
     console.log(
       `  Removed plans: ${removedPlans.length}`
@@ -270,6 +277,16 @@ async function main(): Promise<void> {
       }
     }
 
+    if (recovery.malformed.length > 0) {
+      console.log(
+        `\nMalformed journals (recovery refused — investigate and fix manually):`
+      );
+
+      for (const name of recovery.malformed) {
+        console.log(`  ${name}`);
+      }
+    }
+
     if (!commit) {
       console.log(
         `\nNote: --commit not set, committed journal plan files were not removed.`
@@ -277,7 +294,10 @@ async function main(): Promise<void> {
     }
   }
 
-  if (recovery.conflicts.length > 0) {
+  if (
+    recovery.conflicts.length > 0 ||
+    recovery.malformed.length > 0
+  ) {
     process.exitCode = 1;
   }
 }

@@ -87,10 +87,13 @@ async function main(): Promise<void> {
   const hasRetentionFailure =
     !retentionVerification.ok;
   const hasJournalIssues =
+    journalHealth.invalid > 0 ||
     journalHealth.pending > 0 ||
     journalHealth.ledgerRecorded > 0 ||
+    journalHealth.auditRecorded > 0 ||
     journalHealth.committedButPlanExists > 0 ||
-    journalHealth.conflicts > 0;
+    journalHealth.conflicts > 0 ||
+    journalHealth.crossCheckErrors.length > 0;
 
   let exitCode = 0;
 
@@ -145,13 +148,21 @@ async function main(): Promise<void> {
     },
     deletionJournals: {
       total: journalHealth.total,
+      valid: journalHealth.valid,
+      invalid: journalHealth.invalid,
       pending: journalHealth.pending,
       ledgerRecorded:
         journalHealth.ledgerRecorded,
+      auditRecorded:
+        journalHealth.auditRecorded,
       committed: journalHealth.committed,
       committedButPlanExists:
         journalHealth.committedButPlanExists,
       conflicts: journalHealth.conflicts,
+      crossCheckErrors:
+        journalHealth.crossCheckErrors,
+      invalidJournals:
+        journalHealth.invalidJournals,
     },
   };
 
@@ -238,13 +249,45 @@ async function main(): Promise<void> {
       [
         '\n--- Deletion Journals ---',
         `Total: ${journalHealth.total}`,
+        `Valid: ${journalHealth.valid}`,
+        `Invalid: ${journalHealth.invalid}`,
         `Pending: ${journalHealth.pending}`,
         `LedgerRecorded: ${journalHealth.ledgerRecorded}`,
+        `AuditRecorded: ${journalHealth.auditRecorded}`,
         `Committed: ${journalHealth.committed}`,
         `CommittedButPlanExists: ${journalHealth.committedButPlanExists}`,
         `Conflicts: ${journalHealth.conflicts}`,
+        `CrossCheckErrors: ${journalHealth.crossCheckErrors.length}`,
       ].join('\n')
     );
+
+    if (
+      journalHealth.invalidJournals.length >
+      0
+    ) {
+      console.log(
+        `\n  Malformed journals:`
+      );
+
+      for (const inv of journalHealth.invalidJournals) {
+        console.log(
+          `    ${inv.fileName}: ${inv.error}`
+        );
+      }
+    }
+
+    if (
+      journalHealth.crossCheckErrors.length >
+      0
+    ) {
+      console.log(
+        `\n  Cross-check errors:`
+      );
+
+      for (const err of journalHealth.crossCheckErrors) {
+        console.log(`    ${err}`);
+      }
+    }
 
     if (hasJournalIssues) {
       console.log(

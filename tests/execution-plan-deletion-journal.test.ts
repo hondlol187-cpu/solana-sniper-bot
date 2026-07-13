@@ -932,13 +932,15 @@ test(
     );
 
     const deletionId = createHash('sha256')
-      .update(file.planId)
+      .update(`plan-deletion:${file.planInstanceId}`)
       .digest('hex')
       .slice(0, 32);
 
     const pendingJournal = {
       deletionId,
       planId: file.planId,
+      planInstanceId:
+        file.planInstanceId,
       planSha256: file.sha256,
       deleteReason: 'test-pending',
       status: 'pending' as const,

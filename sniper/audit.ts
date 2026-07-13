@@ -1,9 +1,11 @@
 import {
   appendFile,
   chmod,
+  readFile,
 } from 'node:fs/promises';
 
 import { config } from './config.js';
+import { withFileLock } from './file-lock.js';
 
 const secretNames = new Set([
   'privatekey',
@@ -112,5 +114,94 @@ export async function audit(
   await chmod(
     config.auditFile,
     0o600
+  );
+}
+
+/**
+ * Idempotent audit write. Checks whether an audit
+ * event with the given `auditEventId` already exists
+ * in the audit file before appending. If it exists,
+ * the event is NOT re-written (exactly-once).
+ *
+ * The check + append is atomic under the audit file
+ * lock so concurrent callers cannot both pass the
+ * check and both append.
+ *
+ * Returns { written: true } if the event was newly
+ * appended, { written: false } if it already existed.
+ */
+export async function auditOnce(
+  event: string,
+  auditEventId: string,
+  details: Record<
+    string,
+    unknown
+  > = {}
+): Promise<{ written: boolean }> {
+  return withFileLock(
+    config.auditFile + '.lock',
+    async () => {
+      /*
+       * Read the audit file and check whether
+       * auditEventId already appears in any
+       * entry's details.
+       */
+      try {
+        const content =
+          await readFile(
+            config.auditFile,
+            'utf8'
+          );
+
+        for (const line of content.split(
+          '\n'
+        )) {
+          const trimmed = line.trim();
+
+          if (!trimmed) continue;
+
+          try {
+            const entry = JSON.parse(
+              trimmed
+            ) as {
+              details?: {
+                auditEventId?: unknown;
+              };
+            };
+
+            if (
+              entry.details
+                ?.auditEventId ===
+              auditEventId
+            ) {
+              return {
+                written: false,
+              };
+            }
+          } catch {
+            /*
+             * Skip malformed lines —
+             * they can't contain the
+             * event ID.
+             */
+          }
+        }
+      } catch {
+        /*
+         * Audit file doesn't exist yet —
+         * proceed to write.
+         */
+      }
+
+      /*
+       * Event ID not found — append the event.
+       */
+      await audit(event, {
+        ...details,
+        auditEventId,
+      });
+
+      return { written: true };
+    }
   );
 }

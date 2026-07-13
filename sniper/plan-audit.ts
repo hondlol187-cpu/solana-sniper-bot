@@ -450,181 +450,41 @@ export async function readPlanTombstones(): Promise<
  * then audit the deletion. Called by deleteApprovedExecutionPlan
  * and prune before the plan file is removed.
  *
- * This now delegates to recordPlanDeletionOnce for hash-chain
- * consistency. The legacy non-idempotent JSONL-only path is
- * no longer used.
+ * There is one authoritative deletion transaction implementation:
+ * preparePlanDeletion(). Both recordPlanDeletion and
+ * recordPlanDeletionOnce delegate to it. The legacy
+ * non-journal path is removed — there is no bypass.
  */
 export async function recordPlanDeletion(
   file: ApprovedExecutionPlanFile,
   deleteReason: string
 ): Promise<void> {
-  await recordPlanDeletionOnce(
+  await preparePlanDeletion(
     file,
     deleteReason
   );
 }
 
 /**
- * Idempotent tombstone recorder. Writes a per-plan tombstone
- * file at tombstones/<planId>.json using atomic write (temp +
- * rename, mode 0o600). If the file already exists, this is a
- * no-op — the plan was already tombstoned.
- *
- * Also appends to the JSONL file for convenience and emits the
- * audit event. The per-plan file is the source of truth; the
- * JSONL is secondary.
- *
- * Does NOT catch persistence errors — callers must handle them
- * (fail-closed).
+ * Legacy alias for recordPlanDeletion. Delegates to
+ * preparePlanDeletion — there is no separate tombstone-
+ * only path.
  */
 export async function recordPlanDeletionOnce(
   file: ApprovedExecutionPlanFile,
   deleteReason: string
 ): Promise<void> {
-  await ensurePlanTombstoneDirectory();
-
-  const deletionId = buildDeletionId(
-    file.planInstanceId
-  );
-
-  const perPlanPath =
-    getPlanTombstonePath(deletionId);
-
-  /*
-   * Check if the per-plan tombstone already exists.
-   * If it does, this is a retry — skip the write and
-   * audit. The plan was already tombstoned.
-   */
-  try {
-    await readFile(
-      perPlanPath,
-      'utf8'
-    );
-
-    return;
-  } catch {
-    /*
-     * File does not exist — proceed with write.
-     */
-  }
-
-  /*
-   * Acquire a ledger-level lock so the sequence
-   * number and previousHash are computed atomically
-   * with respect to other concurrent deletions.
-   * The per-plan lock (held by deleteApprovedExecutionPlan)
-   * prevents the same plan from being deleted twice,
-   * but the ledger lock prevents two DIFFERENT plans
-   * from getting the same sequence number.
-   */
-  await withFileLock(
-    getLedgerLockPath(),
-    async () => {
-      /*
-       * Re-check inside the ledger lock in case
-       * another process wrote the tombstone while
-       * we were waiting.
-       */
-      try {
-        await readFile(
-          perPlanPath,
-          'utf8'
-        );
-
-        return;
-      } catch {
-        /* proceed */
-      }
-
-      /*
-       * Read all existing tombstones to find the
-       * last entry's hash and sequence number.
-       */
-      const existing =
-        await readPlanTombstones();
-
-      const lastEntry =
-        existing.length > 0
-          ? existing[
-              existing.length - 1
-            ]
-          : null;
-
-      const sequence =
-        lastEntry
-          ? lastEntry.sequence + 1
-          : 1;
-
-      const previousHash =
-        lastEntry
-          ? lastEntry.entryHash
-          : null;
-
-      const tombstoneWithoutHash: Omit<
-        PlanTombstone,
-        'entryHash'
-      > = {
-        sequence,
-        previousHash,
-        deletionId: buildDeletionId(
-          file.planInstanceId
-        ),
-        planId: file.planId,
-        finalStatus: file.state.status,
-        deletedAt:
-          new Date().toISOString(),
-        deleteReason,
-        sha256: file.sha256,
-        version: file.version,
-        walletPublicKey:
-          file.payload.walletPublicKey,
-        expectedCluster:
-          file.payload.expectedCluster,
-      };
-
-      const entryHash =
-        computeEntryHash(
-          tombstoneWithoutHash
-        );
-
-      const tombstone: PlanTombstone = {
-        ...tombstoneWithoutHash,
-        entryHash,
-      };
-
-      const tempPath =
-        `${perPlanPath}.tmp`;
-
-      await writeFile(
-        tempPath,
-        JSON.stringify(tombstone, null, 2),
-        {
-          encoding: 'utf8',
-          mode: 0o600,
-        }
-      );
-
-      await rename(
-        tempPath,
-        perPlanPath
-      );
-
-      /*
-       * Also append to the JSONL file for convenience.
-       */
-      await writePlanTombstone(tombstone);
-
-      await auditPlanDeleted(
-        file.planId,
-        file.state.status,
-        deleteReason,
-        file.sha256,
-        file.version
-      );
-    }
+  await preparePlanDeletion(
+    file,
+    deleteReason
   );
 }
 
+export interface RetentionLedgerVerification {
+  ok: boolean;
+  entryCount: number;
+  errors: string[];
+}
 export interface RetentionLedgerVerification {
   ok: boolean;
   entryCount: number;
@@ -732,27 +592,37 @@ export async function verifyPlanRetentionLedger(): Promise<RetentionLedgerVerifi
  * Crash-consistent deletion journal.
  *
  * The journal tracks the multi-step deletion transaction:
- *   pending → ledger-recorded → committed
+ *   pending → ledger-recorded → audit-recorded → committed
  *
  * Only a committed journal permits removal of the plan file.
- * If a crash occurs after 'pending' or 'ledger-recorded',
- * recovery can resume from the journal state without
- * duplicating ledger entries or losing audit records.
+ * If a crash occurs after any intermediate state, recovery
+ * can resume from the journal state without duplicating
+ * ledger entries or audit events.
+ *
+ * The `audit-recorded` state closes the crash window between
+ * the audit append and the journal commit. Recovery from
+ * `ledger-recorded` uses `auditOnce` (idempotent by
+ * `auditEventId`) so the audit event is never duplicated.
  */
+
+export type DeletionJournalStatus =
+  | 'pending'
+  | 'ledger-recorded'
+  | 'audit-recorded'
+  | 'committed';
 
 export interface PlanDeletionJournal {
   deletionId: string;
   planId: string;
+  planInstanceId: string;
   planSha256: string;
   deleteReason: string;
 
-  status:
-    | 'pending'
-    | 'ledger-recorded'
-    | 'committed';
+  status: DeletionJournalStatus;
 
   ledgerSequence?: number;
   ledgerEntryHash?: string;
+  auditEventId?: string;
 
   createdAt: string;
   committedAt?: string;
@@ -841,11 +711,262 @@ function buildDeletionId(
 }
 
 /**
+ * Stable audit event ID for the plan-deleted event.
+ * Deterministic from the deletionId so recovery can
+ * detect a previously-written audit event and skip
+ * re-emitting it (exactly-once via auditOnce).
+ */
+function buildDeletionAuditEventId(
+  deletionId: string
+): string {
+  return createHash('sha256')
+    .update(
+      `candidate.execution.plan-deleted:${deletionId}`
+    )
+    .digest('hex');
+}
+
+/**
  * Read all journals from disk. Used by recovery and doctor.
+ *
+ * Note: this function silently skips malformed journals.
+ * For strict validation that reports malformed files, use
+ * scanDeletionJournals() instead.
  */
 export async function readAllJournals(): Promise<
   PlanDeletionJournal[]
 > {
+  const { valid } =
+    await scanDeletionJournals();
+
+  return valid;
+}
+
+export interface InvalidDeletionJournal {
+  path: string;
+  fileName: string;
+  error: string;
+}
+
+export interface DeletionJournalScan {
+  valid: PlanDeletionJournal[];
+  invalid: InvalidDeletionJournal[];
+}
+
+const HEX32 = /^[0-9a-f]{32}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const ISO_TIMESTAMP =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+/**
+ * Validate a parsed journal object against the schema.
+ * Returns an error string if invalid, null if valid.
+ *
+ * Validation rules:
+ * - deletionId: 32 lowercase hex chars
+ * - planId: non-empty string
+ * - planInstanceId: non-empty string (UUID or legacy hex)
+ * - planSha256: 64 hex chars
+ * - deleteReason: non-empty string
+ * - status: one of pending|ledger-recorded|audit-recorded|committed
+ * - createdAt: valid ISO timestamp
+ * - committedAt: valid ISO timestamp when status is committed
+ * - ledgerSequence: positive integer when status >= ledger-recorded
+ * - ledgerEntryHash: 64 hex chars when status >= ledger-recorded
+ * - auditEventId: 64 hex chars when status >= audit-recorded
+ */
+function validateJournal(
+  raw: unknown
+): {
+  valid: boolean;
+  journal?: PlanDeletionJournal;
+  error?: string;
+} {
+  if (
+    typeof raw !== 'object' ||
+    raw === null
+  ) {
+    return {
+      valid: false,
+      error: 'Journal is not an object',
+    };
+  }
+
+  const j = raw as Record<
+    string,
+    unknown
+  >;
+
+  if (
+    typeof j.deletionId !== 'string' ||
+    !HEX32.test(j.deletionId)
+  ) {
+    return {
+      valid: false,
+      error: `Invalid deletionId: ${String(j.deletionId)}`,
+    };
+  }
+
+  if (
+    typeof j.planId !== 'string' ||
+    j.planId.length === 0
+  ) {
+    return {
+      valid: false,
+      error: 'planId is missing or empty',
+    };
+  }
+
+  if (
+    typeof j.planInstanceId !==
+      'string' ||
+    j.planInstanceId.length === 0
+  ) {
+    return {
+      valid: false,
+      error:
+        'planInstanceId is missing or empty',
+    };
+  }
+
+  if (
+    typeof j.planSha256 !== 'string' ||
+    !HEX64.test(j.planSha256)
+  ) {
+    return {
+      valid: false,
+      error: `Invalid planSha256: ${String(j.planSha256)}`,
+    };
+  }
+
+  if (
+    typeof j.deleteReason !== 'string' ||
+    j.deleteReason.length === 0
+  ) {
+    return {
+      valid: false,
+      error: 'deleteReason is missing or empty',
+    };
+  }
+
+  const validStatuses = new Set([
+    'pending',
+    'ledger-recorded',
+    'audit-recorded',
+    'committed',
+  ]);
+
+  if (
+    typeof j.status !== 'string' ||
+    !validStatuses.has(j.status)
+  ) {
+    return {
+      valid: false,
+      error: `Invalid status: ${String(j.status)}`,
+    };
+  }
+
+  if (
+    typeof j.createdAt !== 'string' ||
+    !ISO_TIMESTAMP.test(j.createdAt)
+  ) {
+    return {
+      valid: false,
+      error: `Invalid createdAt: ${String(j.createdAt)}`,
+    };
+  }
+
+  /*
+   * State-specific validation.
+   */
+  const status = j.status as DeletionJournalStatus;
+
+  if (
+    status === 'ledger-recorded' ||
+    status === 'audit-recorded' ||
+    status === 'committed'
+  ) {
+    if (
+      typeof j.ledgerSequence !==
+        'number' ||
+      !Number.isInteger(
+        j.ledgerSequence
+      ) ||
+      j.ledgerSequence < 1
+    ) {
+      return {
+        valid: false,
+        error: `Invalid ledgerSequence for status ${status}: ${String(j.ledgerSequence)}`,
+      };
+    }
+
+    if (
+      typeof j.ledgerEntryHash !==
+        'string' ||
+      !HEX64.test(j.ledgerEntryHash)
+    ) {
+      return {
+        valid: false,
+        error: `Invalid ledgerEntryHash for status ${status}: ${String(j.ledgerEntryHash)}`,
+      };
+    }
+  }
+
+  if (
+    status === 'pending' &&
+    (j.ledgerSequence !== undefined ||
+      j.ledgerEntryHash !== undefined)
+  ) {
+    return {
+      valid: false,
+      error:
+        'pending journal must not have ledger fields',
+    };
+  }
+
+  if (
+    status === 'audit-recorded' ||
+    status === 'committed'
+  ) {
+    if (
+      typeof j.auditEventId !==
+        'string' ||
+      !HEX64.test(j.auditEventId)
+    ) {
+      return {
+        valid: false,
+        error: `Invalid auditEventId for status ${status}: ${String(j.auditEventId)}`,
+      };
+    }
+  }
+
+  if (status === 'committed') {
+    if (
+      typeof j.committedAt !==
+        'string' ||
+      !ISO_TIMESTAMP.test(j.committedAt)
+    ) {
+      return {
+        valid: false,
+        error: `Invalid committedAt: ${String(j.committedAt)}`,
+      };
+    }
+  }
+
+  return {
+    valid: true,
+    journal: j as unknown as PlanDeletionJournal,
+  };
+}
+
+/**
+ * Scan all deletion journals with strict validation.
+ * Unlike readAllJournals, this does NOT silently skip
+ * malformed files — each failure is captured with its
+ * path, fileName, and error message so doctor/recovery
+ * can surface corrupt journals for investigation.
+ */
+export async function scanDeletionJournals(): Promise<DeletionJournalScan> {
   let entries: string[];
 
   try {
@@ -853,10 +974,15 @@ export async function readAllJournals(): Promise<
       getJournalDir()
     );
   } catch {
-    return [];
+    return {
+      valid: [],
+      invalid: [],
+    };
   }
 
-  const journals: PlanDeletionJournal[] =
+  const valid: PlanDeletionJournal[] =
+    [];
+  const invalid: InvalidDeletionJournal[] =
     [];
 
   for (const name of entries) {
@@ -867,23 +993,186 @@ export async function readAllJournals(): Promise<
       continue;
     }
 
+    const fullPath = join(
+      getJournalDir(),
+      name
+    );
+
     try {
       const content = await readFile(
-        join(getJournalDir(), name),
+        fullPath,
         'utf8'
       );
 
-      journals.push(
-        JSON.parse(
-          content
-        ) as PlanDeletionJournal
-      );
-    } catch {
-      /* skip malformed */
+      const parsed = JSON.parse(content);
+
+      const result =
+        validateJournal(parsed);
+
+      if (result.valid && result.journal) {
+        valid.push(result.journal);
+      } else {
+        invalid.push({
+          path: fullPath,
+          fileName: name,
+          error:
+            result.error ??
+            'Unknown validation error',
+        });
+      }
+    } catch (error) {
+      invalid.push({
+        path: fullPath,
+        fileName: name,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
     }
   }
 
-  return journals;
+  return { valid, invalid };
+}
+
+export interface DeletionTransactionVerification {
+  ok: boolean;
+  errors: string[];
+  journalCount: number;
+  tombstoneCount: number;
+}
+
+/**
+ * Cross-check deletion journals against the retention
+ * ledger. For every ledger-recorded, audit-recorded, or
+ * committed journal, require exactly one matching tombstone
+ * with the same deletionId, planId, planSha256, sequence,
+ * and entry hash.
+ *
+ * Also detects:
+ * - ledger entry without a journal
+ * - duplicate deletion IDs
+ * - journal pointing to the wrong ledger entry
+ */
+export async function verifyDeletionTransactions(): Promise<DeletionTransactionVerification> {
+  const { valid: journals, invalid } =
+    await scanDeletionJournals();
+
+  const tombstones =
+    await readPlanTombstones();
+
+  const errors: string[] = [];
+
+  /*
+   * Report invalid journals.
+   */
+  for (const inv of invalid) {
+    errors.push(
+      `Malformed journal ${inv.fileName}: ${inv.error}`
+    );
+  }
+
+  /*
+   * Check for duplicate deletion IDs.
+   */
+  const seenDeletionIds = new Set<
+    string
+  >();
+
+  for (const j of journals) {
+    if (seenDeletionIds.has(j.deletionId)) {
+      errors.push(
+        `Duplicate deletionId: ${j.deletionId}`
+      );
+    }
+
+    seenDeletionIds.add(j.deletionId);
+  }
+
+  /*
+   * For each journal with status >= ledger-recorded,
+   * find the matching tombstone and verify fields.
+   */
+  const tombstoneByDeletionId = new Map(
+    tombstones.map((t) => [
+      t.deletionId,
+      t,
+    ])
+  );
+
+  for (const j of journals) {
+    if (j.status === 'pending') continue;
+
+    const tombstone =
+      tombstoneByDeletionId.get(
+        j.deletionId
+      );
+
+    if (!tombstone) {
+      errors.push(
+        `Journal ${j.deletionId} (status ${j.status}) has no matching ledger entry`
+      );
+
+      continue;
+    }
+
+    if (tombstone.planId !== j.planId) {
+      errors.push(
+        `Journal ${j.deletionId} planId mismatch: journal ${j.planId}, ledger ${tombstone.planId}`
+      );
+    }
+
+    if (tombstone.sha256 !== j.planSha256) {
+      errors.push(
+        `Journal ${j.deletionId} planSha256 mismatch: journal ${j.planSha256}, ledger ${tombstone.sha256}`
+      );
+    }
+
+    if (
+      j.ledgerSequence !== undefined &&
+      tombstone.sequence !==
+        j.ledgerSequence
+    ) {
+      errors.push(
+        `Journal ${j.deletionId} sequence mismatch: journal ${j.ledgerSequence}, ledger ${tombstone.sequence}`
+      );
+    }
+
+    if (
+      j.ledgerEntryHash !== undefined &&
+      tombstone.entryHash !==
+        j.ledgerEntryHash
+    ) {
+      errors.push(
+        `Journal ${j.deletionId} entryHash mismatch: journal ${j.ledgerEntryHash}, ledger ${tombstone.entryHash}`
+      );
+    }
+  }
+
+  /*
+   * Check for orphan ledger entries (tombstones
+   * without a matching journal).
+   */
+  const journalDeletionIds = new Set(
+    journals.map((j) => j.deletionId)
+  );
+
+  for (const t of tombstones) {
+    if (
+      !journalDeletionIds.has(t.deletionId)
+    ) {
+      errors.push(
+        `Orphan ledger entry: tombstone ${t.deletionId} has no matching journal`
+      );
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    journalCount: journals.length,
+    tombstoneCount: tombstones.length,
+  };
 }
 
 /**
@@ -990,6 +1279,8 @@ export async function preparePlanDeletion(
       const pendingJournal: PlanDeletionJournal = {
         deletionId,
         planId: file.planId,
+        planInstanceId:
+          file.planInstanceId,
         planSha256: file.sha256,
         deleteReason,
         status: 'pending',
@@ -1013,13 +1304,18 @@ export async function preparePlanDeletion(
 
 /**
  * Resume a journal from its current state to 'committed'.
- * Called under the ledger lock. Handles all three states:
+ * Called under the ledger lock. Handles all four states:
  *
  *   pending: append ledger, mark ledger-recorded, then
- *            emit audit, mark committed.
+ *            emit audit via auditOnce, mark audit-recorded,
+ *            then mark committed.
  *
  *   ledger-recorded: ledger already appended (idempotent),
- *                     just emit audit and mark committed.
+ *                     just emit audit via auditOnce, mark
+ *                     audit-recorded, then mark committed.
+ *
+ *   audit-recorded: audit already emitted (idempotent),
+ *                    just mark committed.
  *
  *   committed: no-op, return as-is.
  */
@@ -1151,36 +1447,67 @@ async function resumeJournal(
   }
 
   /*
-   * Step 6: Emit audit with deletionId.
-   * (Idempotent — if the audit was already emitted,
-   * re-emitting is safe since audit is append-only.)
+   * Step 6: Emit audit via auditOnce (idempotent by
+   * auditEventId). If the audit was already emitted
+   * (crash after audit but before journal update),
+   * auditOnce returns { written: false } and we
+   * skip the duplicate. Either way, mark audit-recorded.
    */
-  await auditPlanDeleted(
-    file.planId,
-    file.state.status,
-    deleteReason,
-    file.sha256,
-    file.version,
-    {
-      deletionId: current.deletionId,
-      ledgerSequence:
-        current.ledgerSequence,
-      ledgerEntryHash:
-        current.ledgerEntryHash,
-    }
-  );
+  if (
+    current.status === 'ledger-recorded'
+  ) {
+    const auditEventId =
+      buildDeletionAuditEventId(
+        current.deletionId
+      );
+
+    const { auditOnce } = await import(
+      './audit.js'
+    );
+
+    await auditOnce(
+      'candidate.execution.plan-deleted',
+      auditEventId,
+      {
+        planId: file.planId,
+        finalStatus: file.state.status,
+        deleteReason,
+        planSha256: file.sha256,
+        version: file.version,
+        deletionId: current.deletionId,
+        planInstanceId:
+          file.planInstanceId,
+        ledgerSequence:
+          current.ledgerSequence,
+        ledgerEntryHash:
+          current.ledgerEntryHash,
+      }
+    );
+
+    current = {
+      ...current,
+      status: 'audit-recorded',
+      auditEventId,
+    };
+
+    await writeJournal(current);
+  }
 
   /*
    * Step 7: Mark committed.
    */
-  current = {
-    ...current,
-    status: 'committed',
-    committedAt:
-      new Date().toISOString(),
-  };
+  if (
+    current.status === 'audit-recorded'
+  ) {
+    current = {
+      ...current,
+      status: 'committed',
+      committedAt:
+        new Date().toISOString(),
+    };
 
-  await writeJournal(current);
+    await writeJournal(current);
+  }
 
   /*
    * Step 8: Return committed journal.
@@ -1189,28 +1516,52 @@ async function resumeJournal(
 }
 
 /**
- * Recover pending or ledger-recorded deletion journals.
+ * Recover pending, ledger-recorded, or audit-recorded
+ * deletion journals.
  *
  * Resumes each unresolved journal to 'committed' state.
  * Does NOT remove plan files — the caller must do that
  * separately after checking journal.status === 'committed'.
  *
+ * Refuses to operate if malformed journals exist — the
+ * caller must investigate and fix or remove the malformed
+ * journal before recovery can proceed.
+ *
  * Returns:
  *   recovered: deletionIds that were advanced to committed
  *   pending: deletionIds that could not be resolved
  *   conflicts: deletionIds with plan SHA conflicts
+ *   malformed: fileNames of journals that failed validation
  */
 export async function recoverPendingPlanDeletions(): Promise<{
   recovered: string[];
   pending: string[];
   conflicts: string[];
+  malformed: string[];
 }> {
-  const journals =
-    await readAllJournals();
+  const { valid: journals, invalid: invalidJournals } =
+    await scanDeletionJournals();
 
   const recovered: string[] = [];
   const pending: string[] = [];
   const conflicts: string[] = [];
+  const malformed = invalidJournals.map(
+    (j) => j.fileName
+  );
+
+  /*
+   * If there are malformed journals, refuse to recover
+   * any. The caller must investigate and fix or remove
+   * the malformed journal first.
+   */
+  if (malformed.length > 0) {
+    return {
+      recovered,
+      pending,
+      conflicts,
+      malformed,
+    };
+  }
 
   for (const journal of journals) {
     if (
@@ -1275,45 +1626,58 @@ export async function recoverPendingPlanDeletions(): Promise<{
     }
   }
 
-  return { recovered, pending, conflicts };
+  return {
+    recovered,
+    pending,
+    conflicts,
+    malformed,
+  };
 }
 
 export interface DeletionJournalHealth {
   total: number;
+  valid: number;
+  invalid: number;
   pending: number;
   ledgerRecorded: number;
+  auditRecorded: number;
   committed: number;
   committedButPlanExists: number;
   conflicts: number;
+  crossCheckErrors: string[];
   journals: PlanDeletionJournal[];
+  invalidJournals: InvalidDeletionJournal[];
 }
 
 /**
  * Assess deletion journal health for the doctor CLI.
- * Reports counts by status, identifies committed journals
- * whose plan file still exists (should be removed), and
- * detects SHA conflicts.
+ * Uses scanDeletionJournals for strict validation and
+ * verifyDeletionTransactions for cross-checking against
+ * the retention ledger. Any malformed journal or cross-
+ * check error sets the journal-health exit bit.
  */
 export async function assessDeletionJournalHealth(): Promise<DeletionJournalHealth> {
-  const journals =
-    await readAllJournals();
+  const { valid: journals, invalid: invalidJournals } =
+    await scanDeletionJournals();
 
   let pending = 0;
   let ledgerRecorded = 0;
+  let auditRecorded = 0;
   let committed = 0;
   let committedButPlanExists = 0;
   let conflicts = 0;
 
   for (const journal of journals) {
-    if (
-      journal.status === 'pending'
-    ) {
+    if (journal.status === 'pending') {
       pending++;
     } else if (
-      journal.status ===
-      'ledger-recorded'
+      journal.status === 'ledger-recorded'
     ) {
       ledgerRecorded++;
+    } else if (
+      journal.status === 'audit-recorded'
+    ) {
+      auditRecorded++;
     } else if (
       journal.status === 'committed'
     ) {
@@ -1379,13 +1743,26 @@ export async function assessDeletionJournalHealth(): Promise<DeletionJournalHeal
     }
   }
 
+  /*
+   * Cross-check journals against the retention ledger.
+   */
+  const crossCheck =
+    await verifyDeletionTransactions();
+
   return {
-    total: journals.length,
+    total:
+      journals.length +
+      invalidJournals.length,
+    valid: journals.length,
+    invalid: invalidJournals.length,
     pending,
     ledgerRecorded,
+    auditRecorded,
     committed,
     committedButPlanExists,
     conflicts,
+    crossCheckErrors: crossCheck.errors,
     journals,
+    invalidJournals,
   };
 }
