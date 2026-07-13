@@ -825,22 +825,35 @@ export async function commitSimulationReceipt(
  * the SimulationReceipt internally — the caller cannot
  * supply pre-computed hashes.
  */
+export interface SimulationArtifactReturnData {
+  programId: string;
+  data: [string, string];
+}
+
 export interface SimulationArtifactInput {
   planId: string;
   planSha256BeforeSimulation: string;
   serializedTransaction: Buffer;
+
   simulationResponse: {
     contextSlot: number;
     err: unknown | null;
     logs?: string[];
     unitsConsumed?: number;
-    returnData?: string;
+    returnData?:
+      SimulationArtifactReturnData;
   };
+
+  /*
+   * This must be a credential-free label, not a private
+   * RPC URL containing path or query credentials.
+   */
   rpcEndpoint: string;
+
   simulatedAt: string;
-  recentBlockhash?: string;
-  lastValidBlockHeight?: number;
-  currentSlot?: number;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+  currentSlot: number;
 }
 
 /**
@@ -896,6 +909,78 @@ export async function commitSimulationArtifact(
   }
 
   /*
+   * Verify the recent blockhash in the input
+   * matches the one embedded in the transaction
+   * message. This catches a caller that supplies
+   * mismatched metadata.
+   */
+  if (
+    input.recentBlockhash !==
+    transaction.message.recentBlockhash
+  ) {
+    throw new Error(
+      'Artifact recent blockhash does not match transaction message'
+    );
+  }
+
+  /*
+   * Validate lastValidBlockHeight.
+   */
+  if (
+    !Number.isSafeInteger(
+      input.lastValidBlockHeight
+    ) ||
+    input.lastValidBlockHeight < 0
+  ) {
+    throw new Error(
+      'Artifact lastValidBlockHeight is invalid'
+    );
+  }
+
+  /*
+   * Validate simulation context slot.
+   */
+  if (
+    !Number.isSafeInteger(
+      input.simulationResponse
+        .contextSlot
+    ) ||
+    input.simulationResponse
+      .contextSlot < 0
+  ) {
+    throw new Error(
+      'Simulation context slot is invalid'
+    );
+  }
+
+  /*
+   * Validate current slot.
+   */
+  if (
+    !Number.isSafeInteger(
+      input.currentSlot
+    ) ||
+    input.currentSlot < 0
+  ) {
+    throw new Error(
+      'Simulation current slot is invalid'
+    );
+  }
+
+  /*
+   * Context slot must not be ahead of current slot.
+   */
+  if (
+    input.simulationResponse
+      .contextSlot >
+    input.currentSlot
+  ) {
+    throw new Error(
+      'Simulation context slot is ahead of current slot'
+    );
+  }
+
+  /*
    * Recompute hashes from raw bytes.
    */
   const serializedTransactionSha256 =
@@ -925,9 +1010,20 @@ export async function commitSimulationArtifact(
     input.simulationResponse.returnData
       ? createHash('sha256')
           .update(
-            input
-              .simulationResponse
-              .returnData
+            JSON.stringify({
+              programId:
+                input.simulationResponse
+                  .returnData
+                  .programId,
+              data: [
+                input.simulationResponse
+                  .returnData
+                  .data[0],
+                input.simulationResponse
+                  .returnData
+                  .data[1],
+              ],
+            })
           )
           .digest('hex')
       : undefined;
@@ -1056,9 +1152,9 @@ export async function commitSimulationArtifact(
     input.simulationResponse.contextSlot;
 
   if (
-    input.currentSlot !== undefined &&
-    input.currentSlot - contextSlot >
-      config.maxSimulationSlotLag
+    input.currentSlot -
+      contextSlot >
+    config.maxSimulationSlotLag
   ) {
     throw new Error(
       `Simulation slot ${contextSlot} is too far behind current slot ${input.currentSlot} (lag ${input.currentSlot - contextSlot} > ${config.maxSimulationSlotLag})`
@@ -1104,8 +1200,7 @@ export async function commitSimulationArtifact(
     transactionMessageSha256,
     serializedTransactionSha256,
     recentBlockhash:
-      input.recentBlockhash ??
-      transaction.message.recentBlockhash,
+      input.recentBlockhash,
     lastValidBlockHeight:
       input.lastValidBlockHeight,
     simulatedAt: input.simulatedAt,

@@ -120,6 +120,9 @@ function buildPayload(
   };
 }
 
+const RECENT_BLOCKHASH =
+  '9WzDXwBbmkg8ZTbNMqJxHBWu3jJ4a8m8mC7qPvR6e8Qx';
+
 /**
  * Build a minimal versioned transaction that
  * includes the wallet as fee payer and the pool
@@ -212,8 +215,7 @@ function buildTransaction(
   const message = MessageV0.compile({
     payerKey: feePayer,
     instructions: [instruction],
-    recentBlockhash:
-      '9WzDXwBbmkg8ZTbNMqJxHBWu3jJ4a8m8mC7qPvR6e8Qx',
+    recentBlockhash: RECENT_BLOCKHASH,
     addressLookupTableAccounts: [],
   });
 
@@ -233,7 +235,43 @@ function buildSimulationResponse(
     err: null,
     logs: ['log1', 'log2'],
     unitsConsumed: 50_000,
-    returnData: 'base64-data',
+    returnData: {
+      programId:
+        'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      data: ['AQID', 'base64'] as [
+        string,
+        string
+      ],
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * Build a valid SimulationArtifactInput for the
+ * given plan. All required fields are populated
+ * with consistent values (recentBlockhash matches
+ * the transaction, currentSlot > contextSlot, etc.)
+ */
+function buildValidArtifactInput(
+  planFile: import('../sniper/execution-plan.js').ApprovedExecutionPlanFile,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    planId: planFile.planId,
+    planSha256BeforeSimulation:
+      planFile.sha256,
+    serializedTransaction:
+      buildTransaction(),
+    simulationResponse:
+      buildSimulationResponse(),
+    rpcEndpoint:
+      'https://api.mainnet-beta.solana.com',
+    simulatedAt:
+      new Date().toISOString(),
+    recentBlockhash: RECENT_BLOCKHASH,
+    lastValidBlockHeight: 999,
+    currentSlot: 123_480,
     ...overrides,
   };
 }
@@ -266,19 +304,11 @@ test(
       buildTransaction();
 
     const result =
-      await commitSimulationArtifact({
-        planId: created.planId,
-        planSha256BeforeSimulation:
-          file.sha256,
-        serializedTransaction:
-          serializedTx,
-        simulationResponse:
-          buildSimulationResponse(),
-        rpcEndpoint:
-          'https://api.mainnet-beta.solana.com',
-        simulatedAt:
-          new Date().toISOString(),
-      });
+      await commitSimulationArtifact(
+        buildValidArtifactInput(
+          file
+        )
+      );
 
     assert.equal(
       result.state.status,
@@ -348,18 +378,10 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
+          ...buildValidArtifactInput(file),
           serializedTransaction: modified,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
         }),
-      /deserialize|fee payer|AMM|signer/
+      /deserialize|fee payer|AMM|signer|blockhash/
     );
   }
 );
@@ -404,17 +426,11 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
+          ...buildValidArtifactInput(file),
           serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
+            buildTransaction({
+              feePayer: wrongWallet,
+            }),
         }),
       /fee payer/
     );
@@ -461,17 +477,11 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
+          ...buildValidArtifactInput(file),
           serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
+            buildTransaction({
+              extraSigner,
+            }),
         }),
       /unexpected signer/
     );
@@ -519,17 +529,11 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
+          ...buildValidArtifactInput(file),
           serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
+            buildTransaction({
+              poolKey: wrongPool,
+            }),
         }),
       /AMM key/
     );
@@ -570,19 +574,11 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
-          serializedTransaction:
-            serializedTx,
+          ...buildValidArtifactInput(file),
           simulationResponse:
             buildSimulationResponse({
               contextSlot: 100,
             }),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
           currentSlot: 200,
         }),
       /slot.*too far behind|slot.*lag/
@@ -628,15 +624,7 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
-          serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
+          ...buildValidArtifactInput(file),
           simulatedAt: oldTime,
         }),
       /too old/
@@ -674,11 +662,7 @@ test(
     await assert.rejects(
       () =>
         commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
-          serializedTransaction:
-            serializedTx,
+          ...buildValidArtifactInput(file),
           simulationResponse:
             buildSimulationResponse({
               err: {
@@ -688,10 +672,6 @@ test(
                 ],
               },
             }),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
         }),
       /simulation.*error|err/
     );
@@ -758,19 +738,15 @@ test(
      * internally) also says 'devnet'.
      */
     const result =
-      await commitSimulationArtifact({
-        planId: created.planId,
-        planSha256BeforeSimulation:
-          file.sha256,
-        serializedTransaction:
-          serializedTx,
-        simulationResponse:
-          buildSimulationResponse(),
-        rpcEndpoint:
-          'https://api.devnet.solana.com',
-        simulatedAt:
-          new Date().toISOString(),
-      });
+      await commitSimulationArtifact(
+        buildValidArtifactInput(
+          file,
+          {
+            rpcEndpoint:
+              'https://api.devnet.solana.com',
+          }
+        )
+      );
 
     assert.equal(
       result.state.simulationReceipt
@@ -819,19 +795,9 @@ test(
 
     await assert.rejects(
       () =>
-        commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
-          serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
-        }),
+        commitSimulationArtifact(
+          buildValidArtifactInput(file)
+        ),
       /not reusable|status|changed/
     );
   }
@@ -878,20 +844,197 @@ test(
 
     await assert.rejects(
       () =>
-        commitSimulationArtifact({
-          planId: created.planId,
-          planSha256BeforeSimulation:
-            file.sha256,
-          serializedTransaction:
-            serializedTx,
-          simulationResponse:
-            buildSimulationResponse(),
-          rpcEndpoint:
-            'https://api.mainnet-beta.solana.com',
-          simulatedAt:
-            new Date().toISOString(),
-        }),
+        commitSimulationArtifact(
+          buildValidArtifactInput(file)
+        ),
       /not reusable|changed/
+    );
+  }
+);
+
+test(
+  'rejects missing or invalid current slot',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file);
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact({
+          ...input,
+          currentSlot: Number.NaN,
+        }),
+      /current slot is invalid/i
+    );
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact({
+          ...input,
+          currentSlot: -1,
+        }),
+      /current slot is invalid/i
+    );
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact({
+          ...input,
+          currentSlot: 1.5,
+        }),
+      /current slot is invalid/i
+    );
+  }
+);
+
+test(
+  'rejects context slot ahead of current slot',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file);
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact({
+          ...input,
+          simulationResponse: {
+            ...input.simulationResponse,
+            contextSlot: 101,
+          },
+          currentSlot: 100,
+        }),
+      /ahead of current slot/i
+    );
+  }
+);
+
+test(
+  'rejects recent blockhash metadata mismatch',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file);
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact({
+          ...input,
+          recentBlockhash:
+            '11111111111111111111111111111111',
+        }),
+      /blockhash does not match/i
+    );
+  }
+);
+
+test(
+  'return data hash covers program and encoding',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file);
+
+    input.simulationResponse.returnData = {
+      programId:
+        'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      data: [
+        'AQID',
+        'base64',
+      ] as [string, string],
+    };
+
+    const committed =
+      await commitSimulationArtifact(
+        input
+      );
+
+    assert.match(
+      committed.state
+        .simulationReceipt
+        ?.returnDataSha256 ?? '',
+      /^[0-9a-f]{64}$/
     );
   }
 );

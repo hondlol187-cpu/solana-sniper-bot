@@ -11,6 +11,10 @@ import {
   simulateWithSpendGuard,
 } from './transaction-guard.js';
 
+import type {
+  SimulationReturnData,
+} from './transaction-guard.js';
+
 export const SOL_MINT =
   'So11111111111111111111111111111111111111112';
 
@@ -326,6 +330,129 @@ export async function buildSwapTransaction(
       quote.receivedAtMs,
 
     expectedMaximumSpendLamports,
+  };
+}
+
+export interface BuiltSwapSimulationArtifact {
+  serializedTransaction: Buffer;
+
+  simulationResponse: {
+    contextSlot: number;
+    err: unknown | null;
+    logs: string[];
+    unitsConsumed?: number;
+    returnData?: SimulationReturnData;
+  };
+
+  simulatedAt: string;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+  currentSlot: number;
+  simulatedSpendLamports: bigint;
+}
+
+/**
+ * Simulates a swap for an approved execution plan and
+ * returns all evidence required by commitSimulationArtifact.
+ *
+ * A fresh blockhash is installed explicitly before
+ * serialization. RPC-side blockhash replacement is disabled,
+ * ensuring the committed bytes represent the transaction
+ * passed to simulateTransaction().
+ */
+export async function simulateBuiltSwapArtifact(
+  connection: Connection,
+  builtSwap: BuiltSwap
+): Promise<BuiltSwapSimulationArtifact> {
+  assertQuoteFresh(
+    builtSwap.quoteReceivedAtMs
+  );
+
+  /*
+   * Clone so the caller's BuiltSwap is not mutated.
+   */
+  const transaction =
+    VersionedTransaction.deserialize(
+      builtSwap.transaction.serialize()
+    );
+
+  /*
+   * Install a fresh blockhash before capturing bytes.
+   * Do not ask the RPC to replace it opaquely.
+   */
+  const latestBlockhash =
+    await connection.getLatestBlockhash(
+      'processed'
+    );
+
+  transaction.message.recentBlockhash =
+    latestBlockhash.blockhash;
+
+  const guard =
+    await simulateWithSpendGuard(
+      connection,
+      transaction,
+      builtSwap.wallet,
+      {
+        expectedMaximumSpendLamports:
+          builtSwap.expectedMaximumSpendLamports,
+
+        verifySignatures: false,
+
+        /*
+         * Critical artifact invariant: the RPC must
+         * simulate the message represented by the
+         * serialized bytes returned by the guard.
+         */
+        replaceRecentBlockhash: false,
+      }
+    );
+
+  const simulatedAt =
+    new Date().toISOString();
+
+  if (guard.err !== null) {
+    throw new Error(
+      `Transaction simulation failed: ${JSON.stringify(
+        guard.err
+      )}`
+    );
+  }
+
+  const currentSlot =
+    await connection.getSlot(
+      'processed'
+    );
+
+  return {
+    serializedTransaction:
+      guard.serializedTransaction,
+
+    simulationResponse: {
+      contextSlot:
+        guard.contextSlot,
+      err: guard.err,
+      logs: guard.logs,
+      unitsConsumed:
+        guard.unitsConsumed,
+      returnData:
+        guard.returnData,
+    },
+
+    simulatedAt,
+
+    recentBlockhash:
+      transaction.message
+        .recentBlockhash,
+
+    lastValidBlockHeight:
+      latestBlockhash
+        .lastValidBlockHeight,
+
+    currentSlot,
+
+    simulatedSpendLamports:
+      guard.simulatedSpendLamports,
   };
 }
 

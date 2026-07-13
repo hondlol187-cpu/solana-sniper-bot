@@ -10,20 +10,27 @@ export interface SpendGuardOptions {
   verifySignatures: boolean;
 }
 
+export interface SimulationReturnData {
+  programId: string;
+  data: [string, string];
+}
+
 export interface SpendGuardResult {
   balanceBefore: bigint;
   simulatedBalanceAfter: bigint;
   simulatedSpendLamports: bigint;
-  logs: string[];
 
   /*
-   * Raw simulation details for structured receipts.
-   * err is null when the simulation succeeded.
+   * Exact bytes represented by the transaction passed
+   * to connection.simulateTransaction().
    */
+  serializedTransaction: Buffer;
+
+  logs: string[];
   contextSlot: number;
   err: unknown | null;
   unitsConsumed?: number;
-  returnData?: string;
+  returnData?: SimulationReturnData;
 }
 
 export async function simulateWithSpendGuard(
@@ -39,21 +46,26 @@ export async function simulateWithSpendGuard(
     )
   );
 
+  /*
+   * Capture the bytes immediately before simulation.
+   *
+   * Artifact-producing callers must set
+   * replaceRecentBlockhash=false. Otherwise the RPC may
+   * simulate a different message from these bytes.
+   */
+  const serializedTransaction = Buffer.from(
+    transaction.serialize()
+  );
+
   const simulation =
     await connection.simulateTransaction(
       transaction,
       {
         commitment: 'processed',
-        sigVerify:
-          options.verifySignatures,
+        sigVerify: options.verifySignatures,
         replaceRecentBlockhash:
           options.replaceRecentBlockhash,
 
-        /*
-         * Request the wallet account after the
-         * simulated transaction so the maximum SOL
-         * outflow can be checked.
-         */
         accounts: {
           encoding: 'base64',
           addresses: [
@@ -76,22 +88,28 @@ export async function simulateWithSpendGuard(
     simulation.value.unitsConsumed ??
     undefined;
 
-  const returnData =
-    simulation.value.returnData
-      ?.data?.[0] ?? undefined;
+  const rawReturnData =
+    simulation.value.returnData;
 
-  /*
-   * If the simulation failed, return the error
-   * in the result instead of throwing. Callers
-   * (like simulateAndSend) check err and throw.
-   * This allows receipt-capturing callers to
-   * inspect the error without catching.
-   */
-  if (err) {
+  const returnData: SimulationReturnData | undefined =
+    rawReturnData
+      ? {
+          programId:
+            rawReturnData.programId,
+          data: [
+            rawReturnData.data[0],
+            String(rawReturnData.data[1]),
+          ],
+        }
+      : undefined;
+
+  if (err !== null) {
     return {
       balanceBefore,
-      simulatedBalanceAfter: balanceBefore,
+      simulatedBalanceAfter:
+        balanceBefore,
       simulatedSpendLamports: 0n,
+      serializedTransaction,
       logs,
       contextSlot,
       err,
@@ -139,6 +157,7 @@ export async function simulateWithSpendGuard(
     balanceBefore,
     simulatedBalanceAfter,
     simulatedSpendLamports,
+    serializedTransaction,
     logs,
     contextSlot,
     err: null,

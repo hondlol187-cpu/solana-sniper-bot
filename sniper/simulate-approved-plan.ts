@@ -1,6 +1,8 @@
 export {};
 
-import { PublicKey } from '@solana/web3.js';
+import {
+  PublicKey,
+} from '@solana/web3.js';
 
 async function main(): Promise<void> {
   process.env.LIVE_TRADING =
@@ -13,7 +15,7 @@ async function main(): Promise<void> {
     throw new Error(
       [
         'Usage:',
-        'npm run sniper:simulate-approved-plan -- <plan-id>',
+        'npm run sniper:simulate-approved-plan -- <PLAN_ID>',
       ].join('\n')
     );
   }
@@ -58,15 +60,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const payload =
-    planFile.payload;
-
-  // Replay protection: only plans in the `prepared` state can be
-  // simulated. A plan that has already been simulated (or cancelled)
-  // is single-use by default — operators must re-prepare a fresh
-  // plan from the candidate store if they want to simulate again.
   if (
-    planFile.state.status !== 'prepared'
+    planFile.state.status !==
+    'prepared'
   ) {
     throw new Error(
       [
@@ -75,6 +71,9 @@ async function main(): Promise<void> {
       ].join(' ')
     );
   }
+
+  const payload =
+    planFile.payload;
 
   if (!payload.routeOk) {
     throw new Error(
@@ -105,7 +104,8 @@ async function main(): Promise<void> {
       payload.quoteOutAmount,
     otherAmountThreshold:
       payload.quoteOtherAmountThreshold,
-    swapMode: 'ExactIn' as const,
+    swapMode:
+      'ExactIn' as const,
     slippageBps:
       payload.quoteSlippageBps,
     priceImpactPct:
@@ -125,6 +125,9 @@ async function main(): Promise<void> {
   await rpcPool.initialize();
   await rpcPool.ensureCurrentHealthy();
 
+  const connection =
+    rpcPool.current();
+
   const builtSwap =
     await jupiterModule
       .buildSwapTransaction(
@@ -134,32 +137,97 @@ async function main(): Promise<void> {
         )
       );
 
-  const result =
+  /*
+   * Returns the exact serialized bytes and the
+   * raw simulation evidence. It does not broadcast.
+   */
+  const artifact =
     await jupiterModule
-      .simulateAndSend(
-        rpcPool.current(),
-        null,
+      .simulateBuiltSwapArtifact(
+        connection,
         builtSwap
       );
 
+  /*
+   * This is now the only prepared -> simulated
+   * transition used by the CLI.
+   */
   const updatedPlan =
     await executionPlanModule
-      .markApprovedExecutionPlanSimulated(
-        planFile.planId,
-        result
-      );
+      .commitSimulationArtifact({
+        planId:
+          planFile.planId,
 
-  await planAuditModule.auditPlanSimulated(
-    updatedPlan,
-    planFile.state.status,
-    {
-      environmentOk:
-        environmentAssessment.ok,
-      environmentReasons:
-        environmentAssessment.reasons,
-      result,
-    }
-  );
+        planSha256BeforeSimulation:
+          planFile.sha256,
+
+        serializedTransaction:
+          artifact
+            .serializedTransaction,
+
+        simulationResponse:
+          artifact
+            .simulationResponse,
+
+        rpcEndpoint:
+          rpcPool.currentLabel(),
+
+        simulatedAt:
+          artifact.simulatedAt,
+
+        recentBlockhash:
+          artifact.recentBlockhash,
+
+        lastValidBlockHeight:
+          artifact
+            .lastValidBlockHeight,
+
+        currentSlot:
+          artifact.currentSlot,
+      });
+
+  /*
+   * Audit only after the artifact has been
+   * successfully committed.
+   */
+  await planAuditModule
+    .auditPlanSimulated(
+      updatedPlan,
+      planFile.state.status,
+      {
+        environmentOk:
+          environmentAssessment.ok,
+
+        environmentReasons:
+          environmentAssessment
+            .reasons,
+
+        result: 'DRY_RUN',
+
+        contextSlot:
+          artifact
+            .simulationResponse
+            .contextSlot,
+
+        currentSlot:
+          artifact.currentSlot,
+
+        simulatedSpendLamports:
+          artifact
+            .simulatedSpendLamports
+            .toString(),
+
+        serializedTransactionSha256:
+          updatedPlan.state
+            .simulationReceipt
+            ?.serializedTransactionSha256,
+
+        transactionMessageSha256:
+          updatedPlan.state
+            .simulationReceipt
+            ?.transactionMessageSha256,
+      }
+    );
 
   console.log(
     [
@@ -174,7 +242,9 @@ async function main(): Promise<void> {
       `PreviousStatus: ${planFile.state.status}`,
       `NewStatus: ${updatedPlan.state.status}`,
       `SimulationCount: ${updatedPlan.state.simulationCount}`,
-      `Result: ${result}`,
+      `ContextSlot: ${artifact.simulationResponse.contextSlot}`,
+      `CurrentSlot: ${artifact.currentSlot}`,
+      `Result: DRY_RUN`,
       'No transaction was broadcast.',
     ].join(' | ')
   );
