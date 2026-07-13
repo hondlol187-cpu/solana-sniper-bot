@@ -1761,3 +1761,37 @@ Stage Summary:
         with the content from /home/z/my-project/download/verify.yml
     (b) Generate a new PAT with `workflow` scope and paste it here;
         I will push the workflow file in the next turn
+
+---
+Task ID: 19 (CI workflow push follow-up)
+Agent: main (Z.ai Code)
+Task: Push the workflow-only commit (1d7f00b) using a new workflow-scoped PAT.
+
+Work Log:
+- User provided a new PAT (ghp_Jmp1...) that has the `workflow` scope.
+- Pushed commit 1d7f00b (containing only .github/workflows/verify.yml)
+  to origin/main. Push succeeded.
+- Verified via authenticated GitHub API:
+    Run #1: head_sha=1d7f00b, status=completed, conclusion=success
+    Per-step results:
+      Step 1: Set up job            -> success
+      Step 2: Checkout              -> success
+      Step 3: Install Bun           -> success
+      Step 4: Install dependencies  -> success
+      Step 5: Typecheck             -> success
+      Step 6: Lint                  -> success
+      Step 7: Test                  -> success
+    All 9 tests pass in CI exactly as they pass locally.
+- CI URL: https://github.com/hondlol187-cpu/solana-sniper-bot/actions/runs/29217676057
+
+Stage Summary:
+- The full Task ID 19 batch is now live on origin/main. Two commits:
+    95bd429 - test: automated regression tests for decoder + risk ledger
+    1d7f00b - ci: GitHub Actions workflow — typecheck + lint + test on push/PR
+- CI runs on every push to main and every PR. The same `bun run verify`
+  that passes locally passes in CI. Future changes that break the
+  decoder or risk ledger will fail CI before they can land.
+- The OLD PAT (ghp_r4wt...) is now superseded. User should still revoke
+  it from https://github.com/settings/tokens (it has been in chat
+  history 5 times). The new PAT (ghp_Jmp1...) is also in chat history
+  once now and should be revoked/rotated after the next push.
