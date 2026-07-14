@@ -183,6 +183,15 @@ function buildTransaction(
     });
   }
 
+  /*
+   * Build a valid SetComputeUnitLimit instruction
+   * (discriminator 2, 4 bytes LE) so the
+   * compute-budget policy passes.
+   */
+  const cuLimitData = Buffer.alloc(5);
+  cuLimitData[0] = 2;
+  cuLimitData.writeUInt32LE(100_000, 1);
+
   const instructions: TransactionInstruction[] =
     [
       new TransactionInstruction({
@@ -190,7 +199,7 @@ function buildTransaction(
         programId: new PublicKey(
           COMPUTE_BUDGET_PROGRAM
         ),
-        data: Buffer.alloc(0),
+        data: cuLimitData,
       }),
     ];
 
@@ -234,7 +243,7 @@ function buildTransaction(
       programId: new PublicKey(
         COMPUTE_BUDGET_PROGRAM
       ),
-      data: Buffer.alloc(0),
+      data: cuLimitData,
     });
   }
 
@@ -903,6 +912,350 @@ test(
       manifest1.manifestSha256,
       manifest2.manifestSha256,
       'Manifest hash must differ when instruction data differs'
+    );
+  }
+);
+
+test(
+  'instruction-data evidence is order-sensitive',
+  async () => {
+    await configureEnvironment();
+
+    const {
+      buildTransactionManifest,
+      computeInstructionDataSha256,
+    } = await import(
+      '../sniper/transaction-manifest.js'
+    );
+
+    const {
+      VersionedTransaction,
+      MessageV0,
+      PublicKey,
+      TransactionInstruction,
+    } = await import('@solana/web3.js');
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const first =
+      new TransactionInstruction({
+        keys: [
+          {
+            pubkey: payer,
+            isSigner: true,
+            isWritable: true,
+          },
+          {
+            pubkey: pool,
+            isSigner: false,
+            isWritable: true,
+          },
+        ],
+        programId:
+          new PublicKey(
+            COMPUTE_BUDGET_PROGRAM
+          ),
+        data:
+          Buffer.from([
+            2,
+            64,
+            66,
+            15,
+            0,
+          ]),
+      });
+
+    const second =
+      new TransactionInstruction({
+        keys: [
+          {
+            pubkey: payer,
+            isSigner: true,
+            isWritable: true,
+          },
+        ],
+        programId:
+          new PublicKey(
+            COMPUTE_BUDGET_PROGRAM
+          ),
+        data:
+          Buffer.from([
+            3,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ]),
+      });
+
+    function build(
+      instructions:
+        TransactionInstruction[]
+    ) {
+      return new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions,
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+    }
+
+    const firstOrder =
+      await buildTransactionManifest(
+        build([
+          first,
+          second,
+        ]),
+        createArtifactRpc()
+      );
+
+    const secondOrder =
+      await buildTransactionManifest(
+        build([
+          second,
+          first,
+        ]),
+        createArtifactRpc()
+      );
+
+    assert.notEqual(
+      computeInstructionDataSha256(
+        firstOrder
+      ),
+      computeInstructionDataSha256(
+        secondOrder
+      )
+    );
+  }
+);
+
+test(
+  'forbidden token approve instruction is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const approveInstruction =
+      new TransactionInstruction({
+        keys: [
+          {
+            pubkey: payer,
+            isSigner: true,
+            isWritable: true,
+          },
+          {
+            pubkey: pool,
+            isSigner: false,
+            isWritable: true,
+          },
+        ],
+        programId:
+          new PublicKey(
+            TOKEN_PROGRAM
+          ),
+
+        /*
+         * SPL Token Approve discriminator.
+         */
+        data:
+          Buffer.from([
+            4,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ]),
+      });
+
+    const transaction =
+      new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions: [
+            approveInstruction,
+          ],
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+
+    await assert.rejects(
+      commitSimulationArtifact(
+        {
+          ...buildValidArtifactInput(
+            prepared
+          ),
+          serializedTransaction:
+            Buffer.from(
+              transaction.serialize()
+            ),
+        },
+        createArtifactRpc()
+      ),
+      /Forbidden token instruction Approve|policy/i
+    );
+
+    const reloaded =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    assert.equal(
+      reloaded.state.status,
+      'prepared'
+    );
+  }
+);
+
+test(
+  'excessive compute-unit limit is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          transactionPolicy: {
+            allowedProgramIds: [
+              COMPUTE_BUDGET_PROGRAM,
+            ],
+            requiredRouteAccounts: [
+              POOL,
+            ],
+            allowedWritableAccounts: [
+              WALLET,
+              POOL,
+            ],
+            walletTokenAccounts: [],
+            expectedInputMint:
+              'So11111111111111111111111111111111111111112',
+            expectedOutputMint:
+              TOKEN_MINT,
+            maximumComputeUnitLimit:
+              200_000,
+            maximumComputeUnitPriceMicroLamports:
+              1_000_000,
+          },
+        })
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const data =
+      Buffer.alloc(5);
+
+    data[0] = 2;
+    data.writeUInt32LE(
+      300_000,
+      1
+    );
+
+    const transaction =
+      new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions: [
+            new TransactionInstruction({
+              keys: [
+                {
+                  pubkey: payer,
+                  isSigner: true,
+                  isWritable: true,
+                },
+                {
+                  pubkey: pool,
+                  isSigner: false,
+                  isWritable: true,
+                },
+              ],
+              programId:
+                new PublicKey(
+                  COMPUTE_BUDGET_PROGRAM
+                ),
+              data,
+            }),
+          ],
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+
+    await assert.rejects(
+      commitSimulationArtifact(
+        {
+          ...buildValidArtifactInput(
+            prepared
+          ),
+          serializedTransaction:
+            Buffer.from(
+              transaction.serialize()
+            ),
+        },
+        createArtifactRpc()
+      ),
+      /Compute unit limit.*exceeds approved maximum|policy/i
     );
   }
 );

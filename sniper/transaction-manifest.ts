@@ -39,6 +39,14 @@ export interface ManifestInstruction {
   accountAddresses: string[];
   writableAccounts: string[];
   signerAccounts: string[];
+
+  /*
+   * Canonical instruction bytes.
+   *
+   * dataBase64 enables policy enforcement while dataSha256
+   * provides a compact integrity value for receipts.
+   */
+  dataBase64: string;
   dataSha256: string;
 }
 
@@ -296,67 +304,116 @@ export async function buildTransactionManifest(
    */
   const accounts: ManifestAccount[] = [];
 
-  const staticCount = staticAccountKeys.length;
+  const staticCount =
+    staticAccountKeys.length;
 
-  for (let i = 0; i < allAccountKeys.length; i++) {
-    const address = allAccountKeys[i].toBase58();
+  /*
+   * MessageAccountKeys ordering for v0 transactions is:
+   *
+   * 1. static keys
+   * 2. all writable lookup keys from every table
+   * 3. all readonly lookup keys from every table
+   *
+   * Lookup keys are not interleaved table-by-table.
+   */
+  const writableLookupCount =
+    isV0
+      ? message.addressTableLookups
+          .reduce(
+            (total, lookup) =>
+              total +
+              lookup
+                .writableIndexes
+                .length,
+            0
+          )
+      : 0;
+
+  const readonlyLookupCount =
+    isV0
+      ? message.addressTableLookups
+          .reduce(
+            (total, lookup) =>
+              total +
+              lookup
+                .readonlyIndexes
+                .length,
+            0
+          )
+      : 0;
+
+  const writableLookupStart =
+    staticCount;
+
+  const readonlyLookupStart =
+    staticCount +
+    writableLookupCount;
+
+  const expectedAccountCount =
+    staticCount +
+    writableLookupCount +
+    readonlyLookupCount;
+
+  if (
+    allAccountKeys.length !==
+    expectedAccountCount
+  ) {
+    throw new Error(
+      [
+        'Resolved transaction account count mismatch.',
+        `Expected ${expectedAccountCount}.`,
+        `Received ${allAccountKeys.length}.`,
+      ].join(' ')
+    );
+  }
+
+  for (
+    let index = 0;
+    index < allAccountKeys.length;
+    index += 1
+  ) {
+    const address =
+      allAccountKeys[
+        index
+      ].toBase58();
 
     let signer = false;
     let writable = false;
-    let source: ManifestAccount['source'] =
-      'static';
+    let source:
+      ManifestAccount['source'];
 
-    if (i < staticCount) {
-      if (isV0) {
-        signer = message.isAccountSigner(i);
-        writable = message.isAccountWritable(i);
-      } else {
-        signer = message.isAccountSigner(i);
-        writable = message.isAccountWritable(i);
-      }
+    if (
+      index <
+      staticCount
+    ) {
+      signer =
+        message.isAccountSigner(
+          index
+        );
+
+      writable =
+        message.isAccountWritable(
+          index
+        );
 
       source = 'static';
-    } else if (isV0 && message.addressTableLookups) {
+    } else if (
+      index <
+      readonlyLookupStart
+    ) {
       /*
-       * Determine which lookup table and index
-       * this account came from.
+       * Lookup-table addresses can never be transaction
+       * signers because signatures cover static keys.
        */
-      let found = false;
-
-      let writableStart = staticCount;
-      let readonlyStart = staticCount;
-
-      for (const lookup of message.addressTableLookups) {
-        const writableCount = lookup.writableIndexes.length;
-        const readonlyCount = lookup.readonlyIndexes.length;
-
-        if (
-          i >= writableStart &&
-          i < writableStart + writableCount
-        ) {
-          source = 'lookup-writable';
-          writable = true;
-          found = true;
-          break;
-        }
-
-        readonlyStart = writableStart + writableCount;
-
-        if (
-          i >= readonlyStart &&
-          i < readonlyStart + readonlyCount
-        ) {
-          source = 'lookup-readonly';
-          found = true;
-          break;
-        }
-
-        writableStart = readonlyStart + readonlyCount;
-      }
-
-      if (!found) {
-        source = 'static';
-      }
+      signer = false;
+      writable = true;
+      source =
+        'lookup-writable';
+    } else {
+      signer = false;
+      writable = false;
+      source =
+        'lookup-readonly';
     }
 
     accounts.push({
@@ -411,9 +468,21 @@ export async function buildTransactionManifest(
       }
     }
 
-    const dataSha256 = createHash('sha256')
-      .update(Buffer.from(inst.data))
-      .digest('hex');
+    const instructionData =
+      Buffer.from(
+        inst.data
+      );
+
+    const dataBase64 =
+      instructionData
+        .toString('base64');
+
+    const dataSha256 =
+      createHash('sha256')
+        .update(
+          instructionData
+        )
+        .digest('hex');
 
     instructions.push({
       index: idx,
@@ -421,6 +490,7 @@ export async function buildTransactionManifest(
       accountAddresses,
       writableAccounts,
       signerAccounts,
+      dataBase64,
       dataSha256,
     });
   }
@@ -494,6 +564,55 @@ const TOKEN_INSTRUCTION_DISCRIMINATORS = {
   BURN_CHECKED: 15,
 };
 
+const FORBIDDEN_TOKEN_INSTRUCTION_NAMES =
+  new Map<number, string>([
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .APPROVE,
+      'Approve',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .SET_AUTHORITY,
+      'SetAuthority',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .MINT_TO,
+      'MintTo',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .BURN,
+      'Burn',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .FREEZE_ACCOUNT,
+      'FreezeAccount',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .THAW_ACCOUNT,
+      'ThawAccount',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .APPROVE_CHECKED,
+      'ApproveChecked',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .MINT_TO_CHECKED,
+      'MintToChecked',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .BURN_CHECKED,
+      'BurnChecked',
+    ],
+  ]);
+
 /*
  * Compute budget instruction discriminators.
  */
@@ -503,29 +622,91 @@ const COMPUTE_BUDGET_INSTRUCTIONS = {
   SET_COMPUTE_UNIT_PRICE: 3,
 };
 
-function getInstructionDataFirstByte(
-  manifest: TransactionManifest,
-  instructionIndex: number
-): number | undefined {
+function decodeInstructionData(
+  instruction: ManifestInstruction
+): Buffer {
+  let decoded: Buffer;
+
+  try {
+    decoded =
+      Buffer.from(
+        instruction.dataBase64,
+        'base64'
+      );
+  } catch {
+    throw new Error(
+      `Instruction ${instruction.index} has invalid base64 data`
+    );
+  }
+
   /*
-   * We stored the dataSha256, not the raw data.
-   * For discriminator checks, we need the raw
-   * data. Since we don't have it in the manifest,
-   * we use a heuristic: the instruction's
-   * programId determines what the discriminator
-   * means, and we can't check it without the raw
-   * bytes.
-   *
-   * For now, we check program IDs and account
-   * usage patterns. The dataSha256 in the receipt
-   * provides tamper evidence — if the data changes,
-   * the hash changes, and the receipt verification
-   * will catch it.
-   *
-   * TODO: Store raw instruction data in the
-   * manifest for discriminator-level checks.
+   * Buffer.from() can be permissive. Require canonical base64
+   * so distinct input strings cannot represent the same bytes.
    */
-  return undefined;
+  if (
+    decoded.toString(
+      'base64'
+    ) !==
+    instruction.dataBase64
+  ) {
+    throw new Error(
+      `Instruction ${instruction.index} has non-canonical base64 data`
+    );
+  }
+
+  const computedHash =
+    createHash('sha256')
+      .update(decoded)
+      .digest('hex');
+
+  if (
+    computedHash !==
+    instruction.dataSha256
+  ) {
+    throw new Error(
+      `Instruction ${instruction.index} data hash mismatch`
+    );
+  }
+
+  return decoded;
+}
+
+function readU32LE(
+  data: Buffer,
+  offset: number,
+  label: string
+): number {
+  if (
+    data.length <
+    offset + 4
+  ) {
+    throw new Error(
+      `${label} is truncated`
+    );
+  }
+
+  return data.readUInt32LE(
+    offset
+  );
+}
+
+function readU64LE(
+  data: Buffer,
+  offset: number,
+  label: string
+): bigint {
+  if (
+    data.length <
+    offset + 8
+  ) {
+    throw new Error(
+      `${label} is truncated`
+    );
+  }
+
+  return data.readBigUInt64LE(
+    offset
+  );
 }
 
 /**
@@ -599,13 +780,315 @@ export function assessTransactionManifest(
   }
 
   /*
-   * Build the allowed program set from the
-   * plan policy (if present) or fall back to
-   * a safe default allowlist.
+   * Decode and validate all instruction bytes before applying
+   * program-specific policy.
    */
   const policy =
     plan.payload.transactionPolicy;
 
+  const decodedInstructionData =
+    new Map<number, Buffer>();
+
+  for (
+    const instruction of
+    manifest.instructions
+  ) {
+    try {
+      decodedInstructionData.set(
+        instruction.index,
+        decodeInstructionData(
+          instruction
+        )
+      );
+    } catch (error) {
+      const detail =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      reasons.push(detail);
+    }
+  }
+
+  /*
+   * Reject token authority and supply-changing operations.
+   *
+   * Swaps may transfer tokens, create or initialize token
+   * accounts, sync wrapped SOL, and close temporary wrapped-SOL
+   * accounts. They must not approve delegates, change authority,
+   * mint, burn, freeze, or thaw accounts.
+   */
+  for (
+    const instruction of
+    manifest.instructions
+  ) {
+    if (
+      instruction.programId !==
+        TOKEN_PROGRAM_ID &&
+      instruction.programId !==
+        TOKEN_2022_PROGRAM_ID
+    ) {
+      continue;
+    }
+
+    const data =
+      decodedInstructionData.get(
+        instruction.index
+      );
+
+    if (
+      !data ||
+      data.length === 0
+    ) {
+      reasons.push(
+        `Token instruction ${instruction.index} has no discriminator`
+      );
+
+      continue;
+    }
+
+    const discriminator =
+      data[0];
+
+    const forbiddenName =
+      FORBIDDEN_TOKEN_INSTRUCTION_NAMES.get(
+        discriminator
+      );
+
+    if (forbiddenName) {
+      reasons.push(
+        [
+          `Forbidden token instruction ${forbiddenName}`,
+          `at index ${instruction.index}.`,
+        ].join(' ')
+      );
+    }
+  }
+
+  /*
+   * Enforce compute-budget limits.
+   */
+  let computeUnitLimit:
+    number | undefined;
+
+  let computeUnitPrice:
+    bigint | undefined;
+
+  for (
+    const instruction of
+    manifest.instructions
+  ) {
+    if (
+      instruction.programId !==
+      COMPUTE_BUDGET_PROGRAM_ID
+    ) {
+      continue;
+    }
+
+    const data =
+      decodedInstructionData.get(
+        instruction.index
+      );
+
+    if (
+      !data ||
+      data.length === 0
+    ) {
+      reasons.push(
+        `Compute-budget instruction ${instruction.index} has no discriminator`
+      );
+
+      continue;
+    }
+
+    const discriminator =
+      data[0];
+
+    if (
+      discriminator ===
+      COMPUTE_BUDGET_INSTRUCTIONS
+        .SET_COMPUTE_UNIT_LIMIT
+    ) {
+      if (
+        data.length !== 5
+      ) {
+        reasons.push(
+          `Compute-unit-limit instruction ${instruction.index} has invalid length ${data.length}`
+        );
+
+        continue;
+      }
+
+      if (
+        computeUnitLimit !==
+        undefined
+      ) {
+        reasons.push(
+          'Transaction contains duplicate compute-unit-limit instructions'
+        );
+
+        continue;
+      }
+
+      try {
+        computeUnitLimit =
+          readU32LE(
+            data,
+            1,
+            'Compute unit limit'
+          );
+      } catch (error) {
+        reasons.push(
+          error instanceof Error
+            ? error.message
+            : String(error)
+        );
+      }
+
+      continue;
+    }
+
+    if (
+      discriminator ===
+      COMPUTE_BUDGET_INSTRUCTIONS
+        .SET_COMPUTE_UNIT_PRICE
+    ) {
+      if (
+        data.length !== 9
+      ) {
+        reasons.push(
+          `Compute-unit-price instruction ${instruction.index} has invalid length ${data.length}`
+        );
+
+        continue;
+      }
+
+      if (
+        computeUnitPrice !==
+        undefined
+      ) {
+        reasons.push(
+          'Transaction contains duplicate compute-unit-price instructions'
+        );
+
+        continue;
+      }
+
+      try {
+        computeUnitPrice =
+          readU64LE(
+            data,
+            1,
+            'Compute unit price'
+          );
+      } catch (error) {
+        reasons.push(
+          error instanceof Error
+            ? error.message
+            : String(error)
+        );
+      }
+
+      continue;
+    }
+
+    if (
+      discriminator !==
+      COMPUTE_BUDGET_INSTRUCTIONS
+        .REQUEST_HEAP_FRAME
+    ) {
+      reasons.push(
+        `Unsupported compute-budget discriminator ${discriminator} at instruction ${instruction.index}`
+      );
+    }
+  }
+
+  const maximumComputeUnitLimit =
+    policy
+      ?.maximumComputeUnitLimit ??
+    1_400_000;
+
+  if (
+    computeUnitLimit !==
+      undefined &&
+    computeUnitLimit >
+      maximumComputeUnitLimit
+  ) {
+    reasons.push(
+      [
+        `Compute unit limit ${computeUnitLimit}`,
+        `exceeds approved maximum ${maximumComputeUnitLimit}.`,
+      ].join(' ')
+    );
+  }
+
+  const effectiveComputeUnitLimit =
+    computeUnitLimit ??
+    1_400_000;
+
+  const maximumUnitPrice =
+    policy
+      ?.maximumComputeUnitPriceMicroLamports;
+
+  if (
+    maximumUnitPrice !==
+      undefined &&
+    computeUnitPrice !==
+      undefined &&
+    computeUnitPrice >
+      BigInt(
+        maximumUnitPrice
+      )
+  ) {
+    reasons.push(
+      [
+        `Compute unit price ${computeUnitPrice.toString()}`,
+        `exceeds approved maximum ${maximumUnitPrice}.`,
+      ].join(' ')
+    );
+  }
+
+  /*
+   * Also enforce the configured maximum total priority fee.
+   *
+   * micro-lamports/CU × CU ÷ 1,000,000 =
+   * approximate priority-fee lamports.
+   */
+  if (
+    computeUnitPrice !==
+      undefined
+  ) {
+    const priorityFeeLamports =
+      (
+        computeUnitPrice *
+          BigInt(
+            effectiveComputeUnitLimit
+          ) +
+        999_999n
+      ) /
+      1_000_000n;
+
+    if (
+      priorityFeeLamports >
+      BigInt(
+        config
+          .maxPriorityFeeLamports
+      )
+    ) {
+      reasons.push(
+        [
+          `Priority fee ${priorityFeeLamports.toString()} lamports`,
+          `exceeds configured maximum ${config.maxPriorityFeeLamports}.`,
+        ].join(' ')
+      );
+    }
+  }
+
+  /*
+   * Build the allowed program set from the
+   * plan policy (if present) or fall back to
+   * a safe default allowlist.
+   */
   const allowedPrograms = new Set(
     policy?.allowedProgramIds ?? [
       SYSTEM_PROGRAM_ID,
@@ -837,11 +1320,28 @@ export function computeWritableAccountsSha256(
 export function computeInstructionDataSha256(
   manifest: TransactionManifest
 ): string {
-  const dataHashes = manifest.instructions
-    .map((inst) => inst.dataSha256)
-    .sort();
+  /*
+   * Keep instruction order. Sorting would allow two
+   * transactions with reordered instruction data to produce
+   * the same aggregate instruction-data hash.
+   */
+  const dataEvidence =
+    manifest.instructions.map(
+      (instruction) => ({
+        index:
+          instruction.index,
+        programId:
+          instruction.programId,
+        dataSha256:
+          instruction.dataSha256,
+      })
+    );
 
   return createHash('sha256')
-    .update(JSON.stringify(dataHashes))
+    .update(
+      stableStringify(
+        dataEvidence
+      )
+    )
     .digest('hex');
 }

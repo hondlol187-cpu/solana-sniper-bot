@@ -214,7 +214,12 @@ function buildTransaction(
       programId: new PublicKey(
         'ComputeBudget111111111111111111111111111111'
       ),
-      data: Buffer.alloc(0),
+      data: (() => {
+        const d = Buffer.alloc(5);
+        d[0] = 2;
+        d.writeUInt32LE(100_000, 1);
+        return d;
+      })(),
     });
 
   const message = MessageV0.compile({
