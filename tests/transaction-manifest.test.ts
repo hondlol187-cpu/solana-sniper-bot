@@ -1259,3 +1259,334 @@ test(
     );
   }
 );
+
+function buildPolicy(
+  extraWritableAccounts:
+    string[] = []
+) {
+  return {
+    allowedProgramIds: [
+      TOKEN_PROGRAM,
+      COMPUTE_BUDGET_PROGRAM,
+    ],
+
+    requiredRouteAccounts: [
+      POOL,
+    ],
+
+    allowedWritableAccounts: [
+      WALLET,
+      POOL,
+      ...extraWritableAccounts,
+    ],
+
+    walletTokenAccounts: [
+      POOL,
+    ],
+
+    expectedInputMint:
+      'So11111111111111111111111111111111111111112',
+
+    expectedOutputMint:
+      TOKEN_MINT,
+
+    maximumComputeUnitLimit:
+      1_000_000,
+
+    maximumComputeUnitPriceMicroLamports:
+      1_000_000,
+
+    maximumHeapFrameBytes:
+      131_072,
+  };
+}
+
+test(
+  'token Revoke instruction is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          transactionPolicy:
+            buildPolicy(),
+        })
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const transaction =
+      new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions: [
+            new TransactionInstruction({
+              keys: [
+                {
+                  pubkey: pool,
+                  isSigner: false,
+                  isWritable: true,
+                },
+                {
+                  pubkey: payer,
+                  isSigner: true,
+                  isWritable: false,
+                },
+              ],
+              programId:
+                new PublicKey(
+                  TOKEN_PROGRAM
+                ),
+
+              /*
+               * SPL Token Revoke.
+               */
+              data:
+                Buffer.from([
+                  5,
+                ]),
+            }),
+          ],
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+
+    await assert.rejects(
+      commitSimulationArtifact(
+        {
+          ...buildValidArtifactInput(
+            prepared
+          ),
+
+          serializedTransaction:
+            Buffer.from(
+              transaction.serialize()
+            ),
+        },
+        createArtifactRpc()
+      ),
+      /Forbidden token instruction Revoke|policy/i
+    );
+  }
+);
+
+test(
+  'CloseAccount sending lamports away from wallet is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const unexpectedDestination =
+      new PublicKey(
+        'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+      );
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          transactionPolicy:
+            buildPolicy([
+              unexpectedDestination
+                .toBase58(),
+            ]),
+        })
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const transaction =
+      new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions: [
+            new TransactionInstruction({
+              keys: [
+                {
+                  pubkey: pool,
+                  isSigner: false,
+                  isWritable: true,
+                },
+                {
+                  pubkey:
+                    unexpectedDestination,
+                  isSigner: false,
+                  isWritable: true,
+                },
+                {
+                  pubkey: payer,
+                  isSigner: true,
+                  isWritable: false,
+                },
+              ],
+              programId:
+                new PublicKey(
+                  TOKEN_PROGRAM
+                ),
+
+              /*
+               * SPL Token CloseAccount.
+               */
+              data:
+                Buffer.from([
+                  9,
+                ]),
+            }),
+          ],
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+
+    await assert.rejects(
+      commitSimulationArtifact(
+        {
+          ...buildValidArtifactInput(
+            prepared
+          ),
+
+          serializedTransaction:
+            Buffer.from(
+              transaction.serialize()
+            ),
+        },
+        createArtifactRpc()
+      ),
+      /sends lamports.*instead of wallet|policy/i
+    );
+  }
+);
+
+test(
+  'oversized heap-frame request is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload({
+          transactionPolicy:
+            buildPolicy(),
+        })
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const payer =
+      new PublicKey(WALLET);
+
+    const pool =
+      new PublicKey(POOL);
+
+    const data =
+      Buffer.alloc(5);
+
+    data[0] = 1;
+
+    data.writeUInt32LE(
+      262_144,
+      1
+    );
+
+    const transaction =
+      new VersionedTransaction(
+        MessageV0.compile({
+          payerKey: payer,
+          instructions: [
+            new TransactionInstruction({
+              keys: [
+                {
+                  pubkey: payer,
+                  isSigner: true,
+                  isWritable: true,
+                },
+                {
+                  pubkey: pool,
+                  isSigner: false,
+                  isWritable: true,
+                },
+              ],
+              programId:
+                new PublicKey(
+                  COMPUTE_BUDGET_PROGRAM
+                ),
+              data,
+            }),
+          ],
+          recentBlockhash:
+            RECENT_BLOCKHASH,
+          addressLookupTableAccounts:
+            [],
+        })
+      );
+
+    await assert.rejects(
+      commitSimulationArtifact(
+        {
+          ...buildValidArtifactInput(
+            prepared
+          ),
+
+          serializedTransaction:
+            Buffer.from(
+              transaction.serialize()
+            ),
+        },
+        createArtifactRpc()
+      ),
+      /Heap frame size.*invalid|policy/i
+    );
+  }
+);

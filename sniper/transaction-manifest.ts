@@ -90,6 +90,12 @@ export interface ApprovedTransactionPolicy {
   expectedOutputMint: string;
   maximumComputeUnitLimit: number;
   maximumComputeUnitPriceMicroLamports: number;
+
+  /*
+   * Optional because plans written before this field was
+   * introduced must remain readable.
+   */
+  maximumHeapFrameBytes?: number;
 }
 
 /*
@@ -573,6 +579,11 @@ const FORBIDDEN_TOKEN_INSTRUCTION_NAMES =
     ],
     [
       TOKEN_INSTRUCTION_DISCRIMINATORS
+        .REVOKE,
+      'Revoke',
+    ],
+    [
+      TOKEN_INSTRUCTION_DISCRIMINATORS
         .SET_AUTHORITY,
       'SetAuthority',
     ],
@@ -707,6 +718,105 @@ function readU64LE(
   return data.readBigUInt64LE(
     offset
   );
+}
+
+function validateTokenInstructionLength(
+  discriminator: number,
+  dataLength: number,
+  instructionIndex: number
+): string | null {
+  /*
+   * Fixed-size instructions relevant to swap policy.
+   * Variable-size initialization instructions are handled
+   * by program/account policy instead.
+   */
+  const expectedLengths =
+    new Map<number, number>([
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .TRANSFER,
+        9,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .APPROVE,
+        9,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .REVOKE,
+        1,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .SET_AUTHORITY,
+        35,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .MINT_TO,
+        9,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .BURN,
+        9,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .CLOSE_ACCOUNT,
+        1,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .FREEZE_ACCOUNT,
+        1,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .THAW_ACCOUNT,
+        1,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .TRANSFER_CHECKED,
+        10,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .APPROVE_CHECKED,
+        10,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .MINT_TO_CHECKED,
+        10,
+      ],
+      [
+        TOKEN_INSTRUCTION_DISCRIMINATORS
+          .BURN_CHECKED,
+        10,
+      ],
+    ]);
+
+  const expected =
+    expectedLengths.get(
+      discriminator
+    );
+
+  if (
+    expected !== undefined &&
+    dataLength !== expected
+  ) {
+    return [
+      `Token instruction ${instructionIndex}`,
+      `with discriminator ${discriminator}`,
+      `has invalid length ${dataLength};`,
+      `expected ${expected}.`,
+    ].join(' ');
+  }
+
+  return null;
 }
 
 /**
@@ -850,6 +960,21 @@ export function assessTransactionManifest(
     const discriminator =
       data[0];
 
+    const lengthError =
+      validateTokenInstructionLength(
+        discriminator,
+        data.length,
+        instruction.index
+      );
+
+    if (lengthError) {
+      reasons.push(
+        lengthError
+      );
+
+      continue;
+    }
+
     const forbiddenName =
       FORBIDDEN_TOKEN_INSTRUCTION_NAMES.get(
         discriminator
@@ -863,6 +988,110 @@ export function assessTransactionManifest(
         ].join(' ')
       );
     }
+
+    if (
+      discriminator ===
+      TOKEN_INSTRUCTION_DISCRIMINATORS
+        .CLOSE_ACCOUNT
+    ) {
+      /*
+       * SPL Token CloseAccount:
+       *
+       * 0. account being closed
+       * 1. lamport destination
+       * 2. owner/authority
+       * 3+. optional multisig signers
+       *
+       * Jupiter may legitimately close a temporary WSOL
+       * account, but its lamports must return to the bound
+       * wallet and the wallet must authorize the close.
+       */
+      if (data.length !== 1) {
+        reasons.push(
+          `CloseAccount instruction ${instruction.index} has invalid data length ${data.length}`
+        );
+
+        continue;
+      }
+
+      if (
+        instruction
+          .accountAddresses
+          .length < 3
+      ) {
+        reasons.push(
+          `CloseAccount instruction ${instruction.index} has too few accounts`
+        );
+
+        continue;
+      }
+
+      const sourceAccount =
+        instruction
+          .accountAddresses[0];
+
+      const destinationAccount =
+        instruction
+          .accountAddresses[1];
+
+      const authorityAccount =
+        instruction
+          .accountAddresses[2];
+
+      if (
+        destinationAccount !==
+        walletPublicKey
+      ) {
+        reasons.push(
+          [
+            `CloseAccount instruction ${instruction.index}`,
+            `sends lamports to ${destinationAccount}`,
+            `instead of wallet ${walletPublicKey}.`,
+          ].join(' ')
+        );
+      }
+
+      if (
+        authorityAccount !==
+        walletPublicKey
+      ) {
+        reasons.push(
+          [
+            `CloseAccount instruction ${instruction.index}`,
+            `uses authority ${authorityAccount}`,
+            `instead of wallet ${walletPublicKey}.`,
+          ].join(' ')
+        );
+      }
+
+      if (
+        !instruction
+          .signerAccounts
+          .includes(
+            walletPublicKey
+          )
+      ) {
+        reasons.push(
+          `CloseAccount instruction ${instruction.index} is not authorized by the plan wallet`
+        );
+      }
+
+      /*
+       * If the plan contains an explicit token-account
+       * snapshot, only one of those accounts may be closed.
+       */
+      if (
+        policy &&
+        policy.walletTokenAccounts
+          .length > 0 &&
+        !policy.walletTokenAccounts
+          .includes(sourceAccount)
+      ) {
+        reasons.push(
+          `CloseAccount instruction ${instruction.index} closes unapproved token account ${sourceAccount}`
+        );
+      }
+    }
   }
 
   /*
@@ -873,6 +1102,9 @@ export function assessTransactionManifest(
 
   let computeUnitPrice:
     bigint | undefined;
+
+  let heapFrameBytes:
+    number | undefined;
 
   for (
     const instruction of
@@ -993,14 +1225,77 @@ export function assessTransactionManifest(
     }
 
     if (
-      discriminator !==
+      discriminator ===
       COMPUTE_BUDGET_INSTRUCTIONS
         .REQUEST_HEAP_FRAME
     ) {
-      reasons.push(
-        `Unsupported compute-budget discriminator ${discriminator} at instruction ${instruction.index}`
-      );
+      if (
+        data.length !== 5
+      ) {
+        reasons.push(
+          `RequestHeapFrame instruction ${instruction.index} has invalid length ${data.length}`
+        );
+
+        continue;
+      }
+
+      if (
+        heapFrameBytes !==
+        undefined
+      ) {
+        reasons.push(
+          'Transaction contains duplicate RequestHeapFrame instructions'
+        );
+
+        continue;
+      }
+
+      try {
+        heapFrameBytes =
+          readU32LE(
+            data,
+            1,
+            'Heap frame size'
+          );
+      } catch (error) {
+        reasons.push(
+          error instanceof Error
+            ? error.message
+            : String(error)
+        );
+
+        continue;
+      }
+
+      const maximumHeapFrameBytes =
+        policy
+          ?.maximumHeapFrameBytes ??
+        262_144;
+
+      if (
+        heapFrameBytes < 32_768 ||
+        heapFrameBytes >
+          maximumHeapFrameBytes ||
+        heapFrameBytes %
+          1_024 !==
+          0
+      ) {
+        reasons.push(
+          [
+            `Heap frame size ${heapFrameBytes} is invalid.`,
+            'It must be a multiple of 1024 bytes',
+            'and between 32768 and',
+            `${maximumHeapFrameBytes}.`,
+          ].join(' ')
+        );
+      }
+
+      continue;
     }
+
+    reasons.push(
+      `Unsupported compute-budget discriminator ${discriminator} at instruction ${instruction.index}`
+    );
   }
 
   const maximumComputeUnitLimit =
