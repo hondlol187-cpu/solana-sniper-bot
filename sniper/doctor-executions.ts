@@ -1,5 +1,13 @@
 export {};
 
+import type {
+  ExecutionSettlement,
+} from './execution-settlement.js';
+
+import type {
+  ExecutionJournal,
+} from './execution-journal.js';
+
 async function main():
   Promise<void> {
   const [jsonFlag] =
@@ -18,6 +26,7 @@ async function main():
     journalModule,
     artifactModule,
     executionPlanModule,
+    settlementModule,
     riskModule,
     configModule,
     rpcModule,
@@ -30,6 +39,9 @@ async function main():
     ),
     import(
       './execution-plan.js'
+    ),
+    import(
+      './execution-settlement.js'
     ),
     import(
       './risk.js'
@@ -45,7 +57,8 @@ async function main():
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  let journals;
+  let journals:
+    ExecutionJournal[] = [];
 
   try {
     journals =
@@ -63,6 +76,25 @@ async function main():
     journals = [];
   }
 
+  let settlements:
+    ExecutionSettlement[] = [];
+
+  try {
+    settlements =
+      await settlementModule
+        .listExecutionSettlements();
+  } catch (error) {
+    errors.push(
+      `Execution settlement scan failed: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`
+    );
+
+    settlements = [];
+  }
+
   /*
    * Load the risk state once. This requires a current
    * wallet balance, which we fetch via the RPC pool.
@@ -73,6 +105,7 @@ async function main():
     new Set<string>();
   let committedReservationIds =
     new Set<string>();
+  let riskStateLoaded = false;
 
   try {
     const rpcPool =
@@ -113,6 +146,8 @@ async function main():
         riskState
           .committedReservationIds
       );
+
+    riskStateLoaded = true;
   } catch (error) {
     warnings.push(
       `Risk state cross-check skipped: ${
@@ -185,10 +220,13 @@ async function main():
       journal.riskReservationId;
 
     if (
-      journal.status ===
-        'broadcasting' ||
-      journal.status ===
-        'submitted'
+      riskStateLoaded &&
+      (
+        journal.status ===
+          'broadcasting' ||
+        journal.status ===
+          'submitted'
+      )
     ) {
       if (
         !reservationId ||
@@ -200,15 +238,23 @@ async function main():
           `Execution ${journal.executionId} has no active risk reservation`
         );
       }
+    }
 
+    if (
+      journal.status ===
+        'broadcasting' ||
+      journal.status ===
+        'submitted'
+    ) {
       warnings.push(
         `Execution ${journal.executionId} is ${journal.status} and requires reconciliation`
       );
     }
 
     if (
+      riskStateLoaded &&
       journal.status ===
-      'confirmed'
+        'confirmed'
     ) {
       if (
         !reservationId ||
@@ -223,6 +269,7 @@ async function main():
     }
 
     if (
+      riskStateLoaded &&
       journal.status ===
         'failed' &&
       reservationId &&
@@ -276,17 +323,167 @@ async function main():
         )
     );
 
+  if (riskStateLoaded) {
+    for (
+      const reservationId of
+      activeReservationIds
+    ) {
+      if (
+        !journalReservationIds.has(
+          reservationId
+        )
+      ) {
+        errors.push(
+          `Orphan risk reservation ${reservationId} has no execution journal`
+        );
+      }
+    }
+  }
+
+  /*
+   * Cross-reference settlements against execution journals.
+   */
+  const journalByExecutionId =
+    new Map(
+      journals.map(
+        (journal) => [
+          journal.executionId,
+          journal,
+        ]
+      )
+    );
+
+  const settlementByExecutionId =
+    new Map<
+      string,
+      ExecutionSettlement
+    >();
+
   for (
-    const reservationId of
-    activeReservationIds
+    const settlement of
+    settlements
   ) {
     if (
-      !journalReservationIds.has(
-        reservationId
+      settlementByExecutionId.has(
+        settlement.executionId
       )
     ) {
       errors.push(
-        `Orphan risk reservation ${reservationId} has no execution journal`
+        `Execution ${settlement.executionId} has multiple settlement records`
+      );
+
+      continue;
+    }
+
+    settlementByExecutionId.set(
+      settlement.executionId,
+      settlement
+    );
+
+    const journal =
+      journalByExecutionId.get(
+        settlement.executionId
+      );
+
+    if (!journal) {
+      errors.push(
+        `Settlement ${settlement.settlementId} has no execution journal`
+      );
+
+      continue;
+    }
+
+    if (
+      settlement.planId !==
+        journal.planId ||
+      settlement.planInstanceId !==
+        journal.planInstanceId ||
+      settlement.artifactId !==
+        journal.artifactId ||
+      settlement.riskReservationId !==
+        journal.riskReservationId
+    ) {
+      errors.push(
+        `Settlement ${settlement.settlementId} identity does not match execution journal`
+      );
+    }
+
+    if (
+      settlement.status !==
+      'committed'
+    ) {
+      warnings.push(
+        `Settlement ${settlement.settlementId} is incomplete at ${settlement.status}`
+      );
+    }
+
+    if (
+      settlement.status ===
+      'committed'
+    ) {
+      if (
+        settlement.outcome ===
+          'confirmed' &&
+        journal.status !==
+          'confirmed'
+      ) {
+        errors.push(
+          `Committed confirmed settlement ${settlement.settlementId} has journal status ${journal.status}`
+        );
+      }
+
+      if (
+        settlement.outcome ===
+          'failed' &&
+        journal.status !==
+          'failed'
+      ) {
+        errors.push(
+          `Committed failed settlement ${settlement.settlementId} has journal status ${journal.status}`
+        );
+      }
+
+      if (
+        settlement.outcome ===
+          'confirmed' &&
+        journal.confirmedSlot !==
+          settlement.observedSlot
+      ) {
+        errors.push(
+          `Confirmed settlement ${settlement.settlementId} slot does not match journal`
+        );
+      }
+
+      if (
+        settlement.outcome ===
+          'failed' &&
+        journal.failedSlot !==
+          settlement.observedSlot
+      ) {
+        errors.push(
+          `Failed settlement ${settlement.settlementId} slot does not match journal`
+        );
+      }
+    }
+  }
+
+  /*
+   * Detect terminal journals without a settlement record.
+   */
+  for (const journal of journals) {
+    if (
+      (
+        journal.status ===
+          'confirmed' ||
+        journal.status ===
+          'failed'
+      ) &&
+      !settlementByExecutionId.has(
+        journal.executionId
+      )
+    ) {
+      errors.push(
+        `Terminal execution ${journal.executionId} has no settlement journal`
       );
     }
   }
@@ -298,6 +495,16 @@ async function main():
 
     journalCount:
       journals.length,
+
+    settlementCount:
+      settlements.length,
+
+    incompleteSettlementCount:
+      settlements.filter(
+        (settlement) =>
+          settlement.status !==
+          'committed'
+      ).length,
 
     errors,
     warnings,
@@ -319,6 +526,7 @@ async function main():
           : 'EXECUTION STATE NEEDS ATTENTION',
 
         `Journals: ${report.journalCount}`,
+        `Settlements: ${report.settlementCount}`,
         `Errors: ${errors.length}`,
         `Warnings: ${warnings.length}`,
       ].join(' | ')
