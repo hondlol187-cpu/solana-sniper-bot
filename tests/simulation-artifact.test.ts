@@ -16,7 +16,12 @@ import {
   PublicKey,
   TransactionInstruction,
   ComputeBudgetProgram,
+  AddressLookupTableAccount,
 } from '@solana/web3.js';
+
+import type {
+  SimulationArtifactRpc,
+} from '../sniper/simulation-artifact-rpc.js';
 
 let configured = false;
 let planDir: string;
@@ -247,6 +252,69 @@ function buildSimulationResponse(
   };
 }
 
+interface FakeArtifactRpcOptions {
+  currentSlot?: number;
+  currentBlockHeight?: number;
+  blockhashValid?: boolean;
+  lookupTables?:
+    AddressLookupTableAccount[];
+  lookupError?: Error;
+}
+
+function createArtifactRpc(
+  options:
+    FakeArtifactRpcOptions = {}
+): SimulationArtifactRpc {
+  const lookupTables =
+    new Map(
+      (
+        options.lookupTables ??
+        []
+      ).map((table) => [
+        table.key.toBase58(),
+        table,
+      ])
+    );
+
+  return {
+    async getCurrentSlot() {
+      return (
+        options.currentSlot ??
+        123_480
+      );
+    },
+
+    async getCurrentBlockHeight() {
+      return (
+        options
+          .currentBlockHeight ??
+        500
+      );
+    },
+
+    async isRecentBlockhashValid() {
+      return (
+        options.blockhashValid ??
+        true
+      );
+    },
+
+    async loadAddressLookupTable(
+      address: PublicKey
+    ) {
+      if (options.lookupError) {
+        throw options.lookupError;
+      }
+
+      return (
+        lookupTables.get(
+          address.toBase58()
+        ) ?? null
+      );
+    },
+  };
+}
+
 /**
  * Build a valid SimulationArtifactInput for the
  * given plan. All required fields are populated
@@ -271,7 +339,6 @@ function buildValidArtifactInput(
       new Date().toISOString(),
     recentBlockhash: RECENT_BLOCKHASH,
     lastValidBlockHeight: 999,
-    currentSlot: 123_480,
     ...overrides,
   };
 }
@@ -308,7 +375,7 @@ test(
         buildValidArtifactInput(
           file
         )
-      );
+      , createArtifactRpc());
 
     assert.equal(
       result.state.status,
@@ -380,7 +447,7 @@ test(
         commitSimulationArtifact({
           ...buildValidArtifactInput(file),
           serializedTransaction: modified,
-        }),
+        }, createArtifactRpc()),
       /deserialize|fee payer|AMM|signer|blockhash/
     );
   }
@@ -431,7 +498,7 @@ test(
             buildTransaction({
               feePayer: wrongWallet,
             }),
-        }),
+        }, createArtifactRpc()),
       /fee payer/
     );
   }
@@ -482,7 +549,7 @@ test(
             buildTransaction({
               extraSigner,
             }),
-        }),
+        }, createArtifactRpc()),
       /unexpected signer/
     );
   }
@@ -534,7 +601,7 @@ test(
             buildTransaction({
               poolKey: wrongPool,
             }),
-        }),
+        }, createArtifactRpc()),
       /AMM key/
     );
   }
@@ -579,9 +646,13 @@ test(
             buildSimulationResponse({
               contextSlot: 100,
             }),
-          currentSlot: 200,
-        }),
-      /slot.*too far behind|slot.*lag/
+        },
+        createArtifactRpc({
+          currentSlot:
+            100 + 33,
+        })
+      ),
+      /too far behind/i
     );
   }
 );
@@ -626,7 +697,7 @@ test(
         commitSimulationArtifact({
           ...buildValidArtifactInput(file),
           simulatedAt: oldTime,
-        }),
+        }, createArtifactRpc()),
       /too old/
     );
   }
@@ -672,7 +743,7 @@ test(
                 ],
               },
             }),
-        }),
+        }, createArtifactRpc()),
       /simulation.*error|err/
     );
   }
@@ -746,7 +817,7 @@ test(
               'https://api.devnet.solana.com',
           }
         )
-      );
+      , createArtifactRpc());
 
     assert.equal(
       result.state.simulationReceipt
@@ -797,7 +868,7 @@ test(
       () =>
         commitSimulationArtifact(
           buildValidArtifactInput(file)
-        ),
+        , createArtifactRpc()),
       /not reusable|status|changed/
     );
   }
@@ -846,14 +917,14 @@ test(
       () =>
         commitSimulationArtifact(
           buildValidArtifactInput(file)
-        ),
+        , createArtifactRpc()),
       /not reusable|changed/
     );
   }
 );
 
 test(
-  'rejects missing or invalid current slot',
+  'rejects context slot ahead of RPC current slot',
   async () => {
     await configureEnvironment();
     await cleanAll();
@@ -881,35 +952,25 @@ test(
 
     await assert.rejects(
       () =>
-        commitSimulationArtifact({
-          ...input,
-          currentSlot: Number.NaN,
-        }),
-      /current slot is invalid/i
-    );
-
-    await assert.rejects(
-      () =>
-        commitSimulationArtifact({
-          ...input,
-          currentSlot: -1,
-        }),
-      /current slot is invalid/i
-    );
-
-    await assert.rejects(
-      () =>
-        commitSimulationArtifact({
-          ...input,
-          currentSlot: 1.5,
-        }),
-      /current slot is invalid/i
+        commitSimulationArtifact(
+          {
+            ...input,
+            simulationResponse: {
+              ...input.simulationResponse,
+              contextSlot: 200,
+            },
+          },
+          createArtifactRpc({
+            currentSlot: 100,
+          })
+        ),
+      /ahead of.*current slot/i
     );
   }
 );
 
 test(
-  'rejects context slot ahead of current slot',
+  'rejects an invalid RPC blockhash',
   async () => {
     await configureEnvironment();
     await cleanAll();
@@ -937,15 +998,163 @@ test(
 
     await assert.rejects(
       () =>
-        commitSimulationArtifact({
-          ...input,
-          simulationResponse: {
-            ...input.simulationResponse,
-            contextSlot: 101,
-          },
-          currentSlot: 100,
-        }),
-      /ahead of current slot/i
+        commitSimulationArtifact(
+          input,
+          createArtifactRpc({
+            blockhashValid: false,
+          })
+        ),
+      /blockhash is no longer valid/i
+    );
+  }
+);
+
+test(
+  'rejects block height past last valid height',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file, {
+        lastValidBlockHeight:
+          500,
+      });
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact(
+          input,
+          createArtifactRpc({
+            currentBlockHeight:
+              501,
+          })
+        ),
+      /blockhash has expired/i
+    );
+  }
+);
+
+test(
+  'accepts current block height equal to last valid height',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file, {
+        lastValidBlockHeight:
+          500,
+      });
+
+    const result =
+      await commitSimulationArtifact(
+        input,
+        createArtifactRpc({
+          currentBlockHeight:
+            500,
+        })
+      );
+
+    assert.equal(
+      result.state
+        .simulationReceipt
+        ?.verifiedAtBlockHeight,
+      500
+    );
+  }
+);
+
+test(
+  'rejects RPC verification failure',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const file =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(file);
+
+    const rpc: SimulationArtifactRpc = {
+      async getCurrentSlot() {
+        throw new Error(
+          'RPC unavailable'
+        );
+      },
+
+      async getCurrentBlockHeight() {
+        return 500;
+      },
+
+      async isRecentBlockhashValid() {
+        return true;
+      },
+
+      async loadAddressLookupTable() {
+        return null;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        commitSimulationArtifact(
+          input,
+          rpc
+        ),
+      /failed to verify.*RPC unavailable/i
     );
   }
 );
@@ -983,7 +1192,7 @@ test(
           ...input,
           recentBlockhash:
             '11111111111111111111111111111111',
-        }),
+        }, createArtifactRpc()),
       /blockhash does not match/i
     );
   }
@@ -1028,7 +1237,7 @@ test(
     const committed =
       await commitSimulationArtifact(
         input
-      );
+      , createArtifactRpc());
 
     assert.match(
       committed.state

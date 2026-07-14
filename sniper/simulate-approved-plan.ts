@@ -26,12 +26,14 @@ async function main(): Promise<void> {
     jupiterModule,
     rpcModule,
     planAuditModule,
+    artifactRpcModule,
   ] = await Promise.all([
     import('./execution-plan.js'),
     import('./execution-plan-policy.js'),
     import('./jupiter.js'),
     import('./rpc.js'),
     import('./plan-audit.js'),
+    import('./simulation-artifact-rpc.js'),
   ]);
 
   const planFile =
@@ -128,6 +130,12 @@ async function main(): Promise<void> {
   const connection =
     rpcPool.current();
 
+  const artifactRpc =
+    new artifactRpcModule
+      .ConnectionSimulationArtifactRpc(
+        connection
+      );
+
   const builtSwap =
     await jupiterModule
       .buildSwapTransaction(
@@ -154,37 +162,37 @@ async function main(): Promise<void> {
    */
   const updatedPlan =
     await executionPlanModule
-      .commitSimulationArtifact({
-        planId:
-          planFile.planId,
+      .commitSimulationArtifact(
+        {
+          planId:
+            planFile.planId,
 
-        planSha256BeforeSimulation:
-          planFile.sha256,
+          planSha256BeforeSimulation:
+            planFile.sha256,
 
-        serializedTransaction:
-          artifact
-            .serializedTransaction,
+          serializedTransaction:
+            artifact
+              .serializedTransaction,
 
-        simulationResponse:
-          artifact
-            .simulationResponse,
+          simulationResponse:
+            artifact
+              .simulationResponse,
 
-        rpcEndpoint:
-          rpcPool.currentLabel(),
+          rpcEndpoint:
+            rpcPool.currentLabel(),
 
-        simulatedAt:
-          artifact.simulatedAt,
+          simulatedAt:
+            artifact.simulatedAt,
 
-        recentBlockhash:
-          artifact.recentBlockhash,
+          recentBlockhash:
+            artifact.recentBlockhash,
 
-        lastValidBlockHeight:
-          artifact
-            .lastValidBlockHeight,
-
-        currentSlot:
-          artifact.currentSlot,
-      });
+          lastValidBlockHeight:
+            artifact
+              .lastValidBlockHeight,
+        },
+        artifactRpc
+      );
 
   /*
    * Audit only after the artifact has been
@@ -209,8 +217,20 @@ async function main(): Promise<void> {
             .simulationResponse
             .contextSlot,
 
-        currentSlot:
-          artifact.currentSlot,
+        verifiedAtSlot:
+          updatedPlan.state
+            .simulationReceipt
+            ?.verifiedAtSlot,
+
+        verifiedAtBlockHeight:
+          updatedPlan.state
+            .simulationReceipt
+            ?.verifiedAtBlockHeight,
+
+        addressLookupTablesSha256:
+          updatedPlan.state
+            .simulationReceipt
+            ?.addressLookupTablesSha256,
 
         simulatedSpendLamports:
           artifact

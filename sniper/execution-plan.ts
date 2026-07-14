@@ -15,9 +15,18 @@ import {
 import { join } from 'node:path';
 
 import {
-  VersionedTransaction,
+  MessageV0,
   PublicKey,
+  VersionedTransaction,
 } from '@solana/web3.js';
+
+import type {
+  AddressLookupTableAccount,
+} from '@solana/web3.js';
+
+import type {
+  SimulationArtifactRpc,
+} from './simulation-artifact-rpc.js';
 
 import { config } from './config.js';
 
@@ -91,6 +100,16 @@ export interface SimulationReceipt {
   unitsConsumed?: number;
   logsSha256: string;
   returnDataSha256?: string;
+
+  /*
+   * RPC-backed verification evidence.
+   *
+   * Optional so receipts written by older versions
+   * continue to load.
+   */
+  verifiedAtSlot?: number;
+  verifiedAtBlockHeight?: number;
+  addressLookupTablesSha256?: string;
 
   walletPublicKey: string;
   expectedCluster: string;
@@ -853,7 +872,244 @@ export interface SimulationArtifactInput {
   simulatedAt: string;
   recentBlockhash: string;
   lastValidBlockHeight: number;
-  currentSlot: number;
+}
+
+interface ResolvedTransactionAccounts {
+  accountKeys: string[];
+  addressLookupTablesSha256?: string;
+}
+
+interface CanonicalLookupEvidence {
+  tableAddress: string;
+  writable: Array<{
+    index: number;
+    address: string;
+  }>;
+  readonly: Array<{
+    index: number;
+    address: string;
+  }>;
+}
+
+function assertSafeNonNegativeInteger(
+  value: number,
+  label: string
+): void {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new Error(
+      `${label} is invalid`
+    );
+  }
+}
+
+function resolveLookupAddress(
+  table: AddressLookupTableAccount,
+  index: number,
+  kind: 'writable' | 'readonly'
+): PublicKey {
+  assertSafeNonNegativeInteger(
+    index,
+    `Address lookup table ${kind} index`
+  );
+
+  const address =
+    table.state.addresses[index];
+
+  if (!address) {
+    throw new Error(
+      [
+        `Address lookup table ${table.key.toBase58()}`,
+        `has an out-of-range ${kind} index ${index}`,
+      ].join(' ')
+    );
+  }
+
+  return address;
+}
+
+async function resolveTransactionAccounts(
+  transaction: VersionedTransaction,
+  rpc: SimulationArtifactRpc
+): Promise<ResolvedTransactionAccounts> {
+  /*
+   * Legacy messages and v0 messages without lookup
+   * tables need only their static keys.
+   */
+  if (transaction.version !== 0) {
+    return {
+      accountKeys:
+        transaction.message
+          .staticAccountKeys
+          .map((key) =>
+            key.toBase58()
+          ),
+    };
+  }
+
+  const message =
+    transaction.message as MessageV0;
+
+  if (
+    message.addressTableLookups
+      .length === 0
+  ) {
+    return {
+      accountKeys:
+        message.staticAccountKeys.map(
+          (key) => key.toBase58()
+        ),
+    };
+  }
+
+  const lookupTableAccounts:
+    AddressLookupTableAccount[] = [];
+
+  const canonicalEvidence:
+    CanonicalLookupEvidence[] = [];
+
+  for (
+    const lookup of
+    message.addressTableLookups
+  ) {
+    let table:
+      | AddressLookupTableAccount
+      | null;
+
+    try {
+      table =
+        await rpc
+          .loadAddressLookupTable(
+            lookup.accountKey
+          );
+    } catch (error) {
+      const detail =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      throw new Error(
+        [
+          'Failed to load address lookup table',
+          lookup.accountKey.toBase58(),
+          detail,
+        ].join(': ')
+      );
+    }
+
+    if (!table) {
+      throw new Error(
+        `Address lookup table ${lookup.accountKey.toBase58()} does not exist`
+      );
+    }
+
+    if (
+      !table.key.equals(
+        lookup.accountKey
+      )
+    ) {
+      throw new Error(
+        'Loaded address lookup table key does not match transaction lookup'
+      );
+    }
+
+    const writable =
+      Array.from(
+        lookup.writableIndexes
+      ).map((index) => ({
+        index,
+        address:
+          resolveLookupAddress(
+            table,
+            index,
+            'writable'
+          ).toBase58(),
+      }));
+
+    const readonly =
+      Array.from(
+        lookup.readonlyIndexes
+      ).map((index) => ({
+        index,
+        address:
+          resolveLookupAddress(
+            table,
+            index,
+            'readonly'
+          ).toBase58(),
+      }));
+
+    lookupTableAccounts.push(
+      table
+    );
+
+    canonicalEvidence.push({
+      tableAddress:
+        table.key.toBase58(),
+      writable,
+      readonly,
+    });
+  }
+
+  let resolvedKeys;
+
+  try {
+    resolvedKeys =
+      message.getAccountKeys({
+        addressLookupTableAccounts:
+          lookupTableAccounts,
+      });
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    throw new Error(
+      `Failed to resolve transaction address lookup tables: ${detail}`
+    );
+  }
+
+  const accountKeys: string[] = [];
+
+  for (
+    let index = 0;
+    index < resolvedKeys.length;
+    index += 1
+  ) {
+    const key =
+      resolvedKeys.get(index);
+
+    if (!key) {
+      throw new Error(
+        `Resolved transaction account key ${index} is missing`
+      );
+    }
+
+    accountKeys.push(
+      key.toBase58()
+    );
+  }
+
+  /*
+   * Evidence is already in deterministic transaction order.
+   * Object keys and array element order are fixed here.
+   */
+  const addressLookupTablesSha256 =
+    createHash('sha256')
+      .update(
+        JSON.stringify(
+          canonicalEvidence
+        )
+      )
+      .digest('hex');
+
+  return {
+    accountKeys,
+    addressLookupTablesSha256,
+  };
 }
 
 /**
@@ -871,14 +1127,14 @@ export interface SimulationArtifactInput {
  *   5. Verifies the input amount equals the plan's
  *      buyLamports (for SOL input).
  *   6. Verifies route AMM keys match the plan's
- *      routeAmmKeys.
+ *      routeAmmKeys (resolving address lookup tables).
  *   7. Rejects unexpected signers and writable accounts.
  *   8. Verifies simulation err is null.
- *   9. Verifies slot freshness (contextSlot vs currentSlot).
- *  10. Verifies blockhash is still valid.
- *  11. Verifies wallet and cluster match the plan.
- *  12. Constructs the receipt internally.
- *  13. Reacquires the plan lock and commits only if
+ *   9. Verifies blockhash validity and slot freshness
+ *      against live RPC state.
+ *  10. Verifies wallet and cluster match the plan.
+ *  11. Constructs the receipt internally.
+ *  12. Reacquires the plan lock and commits only if
  *      the plan SHA is unchanged.
  *
  * This prevents a compromised caller from supplying
@@ -886,7 +1142,8 @@ export interface SimulationArtifactInput {
  * match the actual transaction bytes.
  */
 export async function commitSimulationArtifact(
-  input: SimulationArtifactInput
+  input: SimulationArtifactInput,
+  rpc: SimulationArtifactRpc
 ): Promise<ApprovedExecutionPlanFile> {
   /*
    * Phase 1: Verify + construct (outside the plan lock).
@@ -926,59 +1183,10 @@ export async function commitSimulationArtifact(
   /*
    * Validate lastValidBlockHeight.
    */
-  if (
-    !Number.isSafeInteger(
-      input.lastValidBlockHeight
-    ) ||
-    input.lastValidBlockHeight < 0
-  ) {
-    throw new Error(
-      'Artifact lastValidBlockHeight is invalid'
-    );
-  }
-
-  /*
-   * Validate simulation context slot.
-   */
-  if (
-    !Number.isSafeInteger(
-      input.simulationResponse
-        .contextSlot
-    ) ||
-    input.simulationResponse
-      .contextSlot < 0
-  ) {
-    throw new Error(
-      'Simulation context slot is invalid'
-    );
-  }
-
-  /*
-   * Validate current slot.
-   */
-  if (
-    !Number.isSafeInteger(
-      input.currentSlot
-    ) ||
-    input.currentSlot < 0
-  ) {
-    throw new Error(
-      'Simulation current slot is invalid'
-    );
-  }
-
-  /*
-   * Context slot must not be ahead of current slot.
-   */
-  if (
-    input.simulationResponse
-      .contextSlot >
-    input.currentSlot
-  ) {
-    throw new Error(
-      'Simulation context slot is ahead of current slot'
-    );
-  }
+  assertSafeNonNegativeInteger(
+    input.lastValidBlockHeight,
+    'Artifact lastValidBlockHeight'
+  );
 
   /*
    * Recompute hashes from raw bytes.
@@ -1127,17 +1335,26 @@ export async function commitSimulationArtifact(
    * in the transaction's account keys include
    * the plan's approvedPoolAddress.
    */
-  const accountKeyStrings =
-    staticAccountKeys.map((k) =>
-      k.toBase58()
+  const resolvedAccounts =
+    await resolveTransactionAccounts(
+      transaction,
+      rpc
+    );
+
+  const accountKeySet =
+    new Set(
+      resolvedAccounts.accountKeys
     );
 
   const expectedAmmKeys =
     planFile.payload.routeAmmKeys;
 
-  for (const ammKey of expectedAmmKeys) {
+  for (
+    const ammKey of
+    expectedAmmKeys
+  ) {
     if (
-      !accountKeyStrings.includes(ammKey)
+      !accountKeySet.has(ammKey)
     ) {
       throw new Error(
         `Transaction is missing expected AMM key: ${ammKey}`
@@ -1146,18 +1363,104 @@ export async function commitSimulationArtifact(
   }
 
   /*
-   * Verify slot freshness.
+   * Verify the transaction against current state from
+   * the same RPC connection that performed simulation.
    */
-  const contextSlot =
-    input.simulationResponse.contextSlot;
+  let verifiedAtSlot: number;
+  let verifiedAtBlockHeight: number;
+  let blockhashValid: boolean;
+
+  try {
+    [
+      verifiedAtSlot,
+      verifiedAtBlockHeight,
+      blockhashValid,
+    ] = await Promise.all([
+      rpc.getCurrentSlot(),
+      rpc.getCurrentBlockHeight(),
+      rpc.isRecentBlockhashValid(
+        transaction.message
+          .recentBlockhash
+      ),
+    ]);
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    throw new Error(
+      `Failed to verify simulation artifact against RPC state: ${detail}`
+    );
+  }
+
+  assertSafeNonNegativeInteger(
+    input.simulationResponse
+      .contextSlot,
+    'Simulation context slot'
+  );
+
+  assertSafeNonNegativeInteger(
+    verifiedAtSlot,
+    'RPC current slot'
+  );
+
+  assertSafeNonNegativeInteger(
+    verifiedAtBlockHeight,
+    'RPC current block height'
+  );
+
+  assertSafeNonNegativeInteger(
+    input.lastValidBlockHeight,
+    'Artifact lastValidBlockHeight'
+  );
+
+  if (!blockhashValid) {
+    throw new Error(
+      'Simulation transaction blockhash is no longer valid'
+    );
+  }
 
   if (
-    input.currentSlot -
-      contextSlot >
+    verifiedAtBlockHeight >
+    input.lastValidBlockHeight
+  ) {
+    throw new Error(
+      [
+        'Simulation transaction blockhash has expired.',
+        `Current block height: ${verifiedAtBlockHeight}.`,
+        `Last valid block height: ${input.lastValidBlockHeight}.`,
+      ].join(' ')
+    );
+  }
+
+  const contextSlot =
+    input.simulationResponse
+      .contextSlot;
+
+  if (
+    contextSlot >
+    verifiedAtSlot
+  ) {
+    throw new Error(
+      'Simulation context slot is ahead of RPC current slot'
+    );
+  }
+
+  const slotLag =
+    verifiedAtSlot -
+    contextSlot;
+
+  if (
+    slotLag >
     config.maxSimulationSlotLag
   ) {
     throw new Error(
-      `Simulation slot ${contextSlot} is too far behind current slot ${input.currentSlot} (lag ${input.currentSlot - contextSlot} > ${config.maxSimulationSlotLag})`
+      [
+        `Simulation slot ${contextSlot} is too far behind`,
+        `verified RPC slot ${verifiedAtSlot}.`,
+        `Lag ${slotLag} exceeds ${config.maxSimulationSlotLag}.`,
+      ].join(' ')
     );
   }
 
@@ -1199,26 +1502,54 @@ export async function commitSimulationArtifact(
   const receipt: SimulationReceipt = {
     transactionMessageSha256,
     serializedTransactionSha256,
+
     recentBlockhash:
       input.recentBlockhash,
+
     lastValidBlockHeight:
       input.lastValidBlockHeight,
-    simulatedAt: input.simulatedAt,
-    rpcEndpoint: input.rpcEndpoint,
+
+    simulatedAt:
+      input.simulatedAt,
+
+    rpcEndpoint:
+      input.rpcEndpoint,
+
     contextSlot,
+    verifiedAtSlot,
+    verifiedAtBlockHeight,
+
     err: null,
+
     unitsConsumed:
       input.simulationResponse
         .unitsConsumed,
+
     logsSha256,
-    ...(returnDataSha256 !== undefined
+
+    ...(returnDataSha256
       ? { returnDataSha256 }
       : {}),
-    walletPublicKey: expectedWallet,
+
+    ...(resolvedAccounts
+      .addressLookupTablesSha256
+      ? {
+          addressLookupTablesSha256:
+            resolvedAccounts
+              .addressLookupTablesSha256,
+        }
+      : {}),
+
+    walletPublicKey:
+      expectedWallet,
+
     expectedCluster:
-      planFile.payload.expectedCluster,
+      planFile.payload
+        .expectedCluster,
+
     planSha256BeforeSimulation:
-      input.planSha256BeforeSimulation,
+      input
+        .planSha256BeforeSimulation,
   };
 
   /*
