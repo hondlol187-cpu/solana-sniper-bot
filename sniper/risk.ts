@@ -1,6 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
 
 import {
+  chmod,
+  lstat,
   readFile,
   rename,
   unlink,
@@ -25,20 +30,59 @@ export interface RiskReservation {
 }
 
 export interface RiskState {
-  version: 1;
+  version: 2;
+
   utcDate: string;
 
-  openingBalanceLamports: string;
+  openingBalanceLamports:
+    string;
+
   spentLamports: string;
 
   completedTrades: number;
 
-  reservations: RiskReservation[];
+  reservations:
+    RiskReservation[];
 
-  committedReservationIds: string[];
-  completedTradeIds: string[];
+  committedReservationIds:
+    string[];
+
+  completedTradeIds:
+    string[];
 
   haltedReason?: string;
+
+  updatedAt: string;
+
+  /*
+   * SHA-256 over every field except stateSha256.
+   */
+  stateSha256: string;
+}
+
+interface LegacyRiskState {
+  version: 1;
+
+  utcDate: string;
+
+  openingBalanceLamports:
+    string;
+
+  spentLamports: string;
+
+  completedTrades: number;
+
+  reservations:
+    RiskReservation[];
+
+  committedReservationIds:
+    string[];
+
+  completedTradeIds:
+    string[];
+
+  haltedReason?: string;
+
   updatedAt: string;
 }
 
@@ -84,18 +128,109 @@ function solToLamports(
   );
 }
 
+function stableStringify(
+  value: unknown
+): string {
+  if (
+    value === null ||
+    typeof value !== 'object'
+  ) {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value
+      .map(stableStringify)
+      .join(',')}]`;
+  }
+
+  const entries =
+    Object.entries(
+      value as Record<
+        string,
+        unknown
+      >
+    )
+      .filter(
+        ([, item]) =>
+          item !== undefined
+      )
+      .sort(([left], [right]) =>
+        left.localeCompare(right)
+      );
+
+  return `{${entries
+    .map(
+      ([key, item]) =>
+        `${JSON.stringify(key)}:${stableStringify(item)}`
+    )
+    .join(',')}}`;
+}
+
+function computeRiskStateHash(
+  state:
+    Omit<
+      RiskState,
+      'stateSha256'
+    >
+): string {
+  return createHash('sha256')
+    .update(
+      stableStringify(
+        state
+      )
+    )
+    .digest('hex');
+}
+
+function sealRiskState(
+  state:
+    Omit<
+      RiskState,
+      'stateSha256'
+    >
+): RiskState {
+  return {
+    ...state,
+
+    stateSha256:
+      computeRiskStateHash(
+        state
+      ),
+  };
+}
+
+function assertIsoTimestamp(
+  value: string,
+  label: string
+): void {
+  if (
+    !Number.isFinite(
+      Date.parse(value)
+    )
+  ) {
+    throw new Error(
+      `${label} is invalid`
+    );
+  }
+}
+
 function emptyState(
-  openingBalanceLamports: bigint
+  openingBalanceLamports:
+    bigint
 ): RiskState {
   const now =
     new Date().toISOString();
 
-  return {
-    version: 1,
-    utcDate: utcDate(),
+  return sealRiskState({
+    version: 2,
+
+    utcDate:
+      utcDate(),
 
     openingBalanceLamports:
-      openingBalanceLamports.toString(),
+      openingBalanceLamports
+        .toString(),
 
     spentLamports: '0',
 
@@ -103,11 +238,13 @@ function emptyState(
 
     reservations: [],
 
-    committedReservationIds: [],
+    committedReservationIds:
+      [],
+
     completedTradeIds: [],
 
     updatedAt: now,
-  };
+  });
 }
 
 function validateIntegerString(
@@ -127,6 +264,184 @@ function validateIntegerString(
   }
 }
 
+function validateReservation(
+  reservation:
+    RiskReservation
+): void {
+  if (
+    !reservation.id ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(
+      reservation.id
+    )
+  ) {
+    throw new Error(
+      'Risk reservation ID is invalid'
+    );
+  }
+
+  if (
+    !reservation.mint.trim()
+  ) {
+    throw new Error(
+      'Risk reservation mint is invalid'
+    );
+  }
+
+  validateIntegerString(
+    reservation
+      .amountLamports,
+    'reservation.amountLamports'
+  );
+
+  if (
+    BigInt(
+      reservation.amountLamports
+    ) <= 0n
+  ) {
+    throw new Error(
+      'Risk reservation amount must be positive'
+    );
+  }
+
+  assertIsoTimestamp(
+    reservation.createdAt,
+    'Risk reservation createdAt'
+  );
+}
+
+function validateRiskStateContents(
+  state:
+    Omit<
+      RiskState,
+      'stateSha256'
+    >
+): void {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      state.utcDate
+    )
+  ) {
+    throw new Error(
+      'Risk utcDate is invalid'
+    );
+  }
+
+  validateIntegerString(
+    state
+      .openingBalanceLamports,
+    'openingBalanceLamports'
+  );
+
+  validateIntegerString(
+    state.spentLamports,
+    'spentLamports'
+  );
+
+  if (
+    !Number.isSafeInteger(
+      state.completedTrades
+    ) ||
+    state.completedTrades < 0
+  ) {
+    throw new Error(
+      'Risk completedTrades is invalid'
+    );
+  }
+
+  assertIsoTimestamp(
+    state.updatedAt,
+    'Risk updatedAt'
+  );
+
+  const reservationIds =
+    new Set<string>();
+
+  for (
+    const reservation of
+    state.reservations
+  ) {
+    validateReservation(
+      reservation
+    );
+
+    if (
+      reservationIds.has(
+        reservation.id
+      )
+    ) {
+      throw new Error(
+        `Duplicate active risk reservation: ${reservation.id}`
+      );
+    }
+
+    reservationIds.add(
+      reservation.id
+    );
+  }
+
+  const committedIds =
+    new Set(
+      state
+        .committedReservationIds
+    );
+
+  if (
+    committedIds.size !==
+    state
+      .committedReservationIds
+      .length
+  ) {
+    throw new Error(
+      'Risk committedReservationIds contains duplicates'
+    );
+  }
+
+  const completedIds =
+    new Set(
+      state.completedTradeIds
+    );
+
+  if (
+    completedIds.size !==
+    state.completedTradeIds
+      .length
+  ) {
+    throw new Error(
+      'Risk completedTradeIds contains duplicates'
+    );
+  }
+
+  for (
+    const reservationId of
+    reservationIds
+  ) {
+    if (
+      committedIds.has(
+        reservationId
+      )
+    ) {
+      throw new Error(
+        `Risk reservation ${reservationId} is both active and committed`
+      );
+    }
+  }
+
+  if (
+    state.haltedReason !==
+      undefined &&
+    (
+      typeof state
+        .haltedReason !==
+        'string' ||
+      !state.haltedReason.trim()
+    )
+  ) {
+    throw new Error(
+      'Risk haltedReason is invalid'
+    );
+  }
+}
+
 function validateState(
   value: unknown
 ): RiskState {
@@ -140,18 +455,26 @@ function validateState(
   }
 
   const candidate =
-    value as Partial<RiskState>;
+    value as Record<
+      string,
+      unknown
+    >;
 
   if (
-    candidate.version !== 1 ||
+    (
+      candidate.version !== 1 &&
+      candidate.version !== 2
+    ) ||
     typeof candidate.utcDate !==
       'string' ||
     typeof candidate
       .openingBalanceLamports !==
       'string' ||
-    typeof candidate.spentLamports !==
+    typeof candidate
+      .spentLamports !==
       'string' ||
-    typeof candidate.completedTrades !==
+    typeof candidate
+      .completedTrades !==
       'number' ||
     !Array.isArray(
       candidate.reservations
@@ -162,30 +485,164 @@ function validateState(
     ) ||
     !Array.isArray(
       candidate.completedTradeIds
-    )
+    ) ||
+    typeof candidate.updatedAt !==
+      'string'
   ) {
     throw new Error(
       'Risk state has an unsupported format'
     );
   }
 
-  validateIntegerString(
-    candidate.openingBalanceLamports,
-    'openingBalanceLamports'
+  const body:
+    Omit<
+      RiskState,
+      'stateSha256'
+    > = {
+      version: 2,
+
+      utcDate:
+        candidate.utcDate as
+          string,
+
+      openingBalanceLamports:
+        candidate
+          .openingBalanceLamports as
+          string,
+
+      spentLamports:
+        candidate
+          .spentLamports as
+          string,
+
+      completedTrades:
+        candidate
+          .completedTrades as
+          number,
+
+      reservations:
+        candidate
+          .reservations as
+          RiskReservation[],
+
+      committedReservationIds:
+        candidate
+          .committedReservationIds as
+          string[],
+
+      completedTradeIds:
+        candidate
+          .completedTradeIds as
+          string[],
+
+      updatedAt:
+        candidate
+          .updatedAt as
+          string,
+
+      ...(candidate
+        .haltedReason !==
+        undefined
+        ? {
+            haltedReason:
+              candidate
+                .haltedReason as
+                string,
+          }
+        : {}),
+    };
+
+  validateRiskStateContents(
+    body
   );
 
-  validateIntegerString(
-    candidate.spentLamports,
-    'spentLamports'
-  );
+  /*
+   * Version 1 is accepted for one-way migration. Its
+   * historical integrity cannot be proven, but the next
+   * write upgrades it to a hashed v2 state.
+   */
+  if (
+    candidate.version === 1
+  ) {
+    return sealRiskState(
+      body
+    );
+  }
 
-  return candidate as RiskState;
+  const candidateStateSha256 =
+    candidate
+      .stateSha256;
+
+  if (
+    typeof candidateStateSha256 !==
+      'string' ||
+    !/^[0-9a-f]{64}$/.test(
+      candidateStateSha256
+    )
+  ) {
+    throw new Error(
+      'Risk state SHA-256 is invalid'
+    );
+  }
+
+  const expectedHash =
+    computeRiskStateHash(
+      body
+    );
+
+  if (
+    candidateStateSha256 !==
+    expectedHash
+  ) {
+    throw new Error(
+      'Risk state hash mismatch'
+    );
+  }
+
+  return {
+    ...body,
+
+    stateSha256:
+      candidateStateSha256,
+  };
 }
 
 async function loadUnsafe(
   currentBalanceLamports: bigint
 ): Promise<RiskState> {
   try {
+    const info =
+      await lstat(
+        config.riskFile
+      );
+
+    if (
+      info.isSymbolicLink()
+    ) {
+      throw new Error(
+        'Risk state file must not be a symbolic link'
+      );
+    }
+
+    if (!info.isFile()) {
+      throw new Error(
+        'Risk state path is not a regular file'
+      );
+    }
+
+    if (
+      process.platform !==
+        'win32' &&
+      (
+        info.mode &
+        0o077
+      ) !== 0
+    ) {
+      throw new Error(
+        'Risk state file permissions are too open'
+      );
+    }
+
     const content = await readFile(
       config.riskFile,
       'utf8'
@@ -238,25 +695,77 @@ async function loadUnsafe(
 async function saveUnsafe(
   state: RiskState
 ): Promise<void> {
-  state.updatedAt =
-    new Date().toISOString();
+  const {
+    stateSha256: _,
+    ...existingBody
+  } = state;
+
+  const body:
+    Omit<
+      RiskState,
+      'stateSha256'
+    > = {
+      ...existingBody,
+
+      version: 2,
+
+      updatedAt:
+        new Date()
+          .toISOString(),
+    };
+
+  validateRiskStateContents(
+    body
+  );
+
+  const sealed =
+    sealRiskState(
+      body
+    );
 
   const temporaryFile =
-    `${config.riskFile}.tmp`;
+    `${config.riskFile}.${randomUUID()}.tmp`;
 
-  await writeFile(
-    temporaryFile,
-    JSON.stringify(state, null, 2),
-    {
-      encoding: 'utf8',
-      mode: 0o600,
+  try {
+    await writeFile(
+      temporaryFile,
+      JSON.stringify(
+        sealed,
+        null,
+        2
+      ),
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      }
+    );
+
+    await rename(
+      temporaryFile,
+      config.riskFile
+    );
+
+    await chmod(
+      config.riskFile,
+      0o600
+    );
+
+    Object.assign(
+      state,
+      sealed
+    );
+  } catch (error) {
+    try {
+      await unlink(
+        temporaryFile
+      );
+    } catch {
+      // Best-effort temporary-file cleanup.
     }
-  );
 
-  await rename(
-    temporaryFile,
-    config.riskFile
-  );
+    throw error;
+  }
 }
 
 function reservedTotal(
