@@ -4,17 +4,11 @@ import {
 
 import {
   loadExecutionJournal,
-  markExecutionConfirmed,
 } from './execution-journal.js';
 
 import type {
   ExecutionJournal,
 } from './execution-journal.js';
-
-import {
-  auditExecutionConfirmed,
-  auditExecutionFailed,
-} from './execution-audit.js';
 
 export interface ExecutionSignatureStatus {
   slot: number;
@@ -240,21 +234,14 @@ export async function reconcileExecution(
 
   if (rpcStatus.err !== null) {
     /*
-     * On-chain failure: release the risk reservation BEFORE
-     * marking the journal failed. Ordering: risk release →
-     * journal failed → audit. If the process crashes between
-     * steps, rerunning reconciliation is safe:
-     *   - If the journal is still 'broadcasting'/'submitted',
-     *     releaseReservationIfPresent returns {released:false}
-     *     on the second run (reservation already gone) and the
-     *     journal transition proceeds.
-     *   - If the journal already reached 'failed', the top-of-
-     *     function early-return handles idempotency.
+     * On-chain failure: route through the crash-consistent
+     * settlement journal so risk release, journal transition,
+     * and audit are applied atomically and recoverably.
      */
     const {
-      releaseReservationIfPresent,
+      settleExecutionOutcome,
     } = await import(
-      './risk.js'
+      './execution-settlement.js'
     );
 
     const balance =
@@ -263,25 +250,34 @@ export async function reconcileExecution(
           .walletPublicKey
       );
 
-    await releaseReservationIfPresent(
-      riskReservationId,
-      plan.payload.exactMint,
-      balance
-    );
+    const settlement =
+      await settleExecutionOutcome({
+        executionId,
 
-    const { markSubmittedExecutionFailed } = await import(
-      './execution-journal.js'
-    );
+        outcome: 'failed',
 
-    const failed = await markSubmittedExecutionFailed(
-      executionId,
-      `On-chain transaction error: ${JSON.stringify(rpcStatus.err)}`,
-      rpcStatus.slot
-    );
+        observedSlot:
+          rpcStatus.slot,
 
-    await auditExecutionFailed(
-      failed
-    );
+        failureReason:
+          `On-chain transaction error: ${JSON.stringify(
+            rpcStatus.err
+          )}`,
+
+        currentBalanceLamports:
+          balance,
+      });
+
+    const failed =
+      await loadExecutionJournal(
+        settlement.executionId
+      );
+
+    if (!failed) {
+      throw new Error(
+        'Execution journal disappeared after settlement'
+      );
+    }
 
     return {
       action: 'failed',
@@ -301,19 +297,15 @@ export async function reconcileExecution(
       'finalized'
   ) {
     /*
-     * Confirmation: commit the risk reservation and record
-     * the completed trade BEFORE marking the journal
-     * confirmed. Ordering: risk commit → completed count →
-     * journal confirmed → audit. Both commitReservation and
-     * recordTradeCompleted are idempotent, so a crash between
-     * steps is safe on rerun (the top-of-function early-return
-     * handles a journal that already reached 'confirmed').
+     * Confirmation: route through the crash-consistent
+     * settlement journal so risk commit, completed-trade
+     * count, journal transition, and audit are applied
+     * atomically and recoverably.
      */
     const {
-      commitReservation,
-      recordTradeCompleted,
+      settleExecutionOutcome,
     } = await import(
-      './risk.js'
+      './execution-settlement.js'
     );
 
     const balance =
@@ -322,30 +314,31 @@ export async function reconcileExecution(
           .walletPublicKey
       );
 
-    await commitReservation(
-      riskReservationId,
-      balance
-    );
+    const settlement =
+      await settleExecutionOutcome({
+        executionId,
 
-    await recordTradeCompleted(
-      journal.executionId,
-      balance
-    );
+        outcome: 'confirmed',
+
+        observedSlot:
+          rpcStatus.slot,
+
+        confirmationStatus,
+
+        currentBalanceLamports:
+          balance,
+      });
 
     const confirmed =
-      await markExecutionConfirmed(
-        executionId,
-        {
-          slot:
-            rpcStatus.slot,
-
-          confirmationStatus,
-        }
+      await loadExecutionJournal(
+        settlement.executionId
       );
 
-    await auditExecutionConfirmed(
-      confirmed
-    );
+    if (!confirmed) {
+      throw new Error(
+        'Execution journal disappeared after settlement'
+      );
+    }
 
     return {
       action: 'confirmed',
