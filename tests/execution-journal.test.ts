@@ -210,7 +210,12 @@ test(
 
     const confirmed =
       await markExecutionConfirmed(
-        journal.executionId
+        journal.executionId,
+        {
+          slot: 200,
+          confirmationStatus:
+            'confirmed',
+        }
       );
 
     assert.equal(
@@ -349,7 +354,12 @@ test(
     );
 
     await markExecutionConfirmed(
-      journal.executionId
+      journal.executionId,
+      {
+        slot: 200,
+        confirmationStatus:
+          'confirmed',
+      }
     );
 
     await assert.rejects(
@@ -574,7 +584,12 @@ test(
 
     const confirmed =
       await markExecutionConfirmed(
-        journal.executionId
+        journal.executionId,
+        {
+          slot: 300,
+          confirmationStatus:
+            'finalized',
+        }
       );
 
     assert.equal(

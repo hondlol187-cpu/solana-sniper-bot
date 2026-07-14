@@ -360,7 +360,12 @@ test(
     );
 
     await markExecutionConfirmed(
-      journalB.executionId
+      journalB.executionId,
+      {
+        slot: 400,
+        confirmationStatus:
+          'confirmed',
+      }
     );
 
     const nowMsB =

@@ -53,11 +53,33 @@ const MSG_SHA = 'b'.repeat(64);
 const LAST_VALID_BLOCK_HEIGHT = 200_000_000;
 
 function createFakeRpc(
-  status: ExecutionSignatureStatus | null
+  status:
+    | Omit<
+        ExecutionSignatureStatus,
+        'slot'
+      > &
+      Partial<
+        Pick<
+          ExecutionSignatureStatus,
+          'slot'
+        >
+      >
+    | null
 ): ExecutionStatusRpc {
   return {
     async getSignatureStatus() {
-      return status;
+      if (status === null) {
+        return null;
+      }
+
+      return {
+        slot:
+          status.slot ??
+          100,
+        confirmationStatus:
+          status.confirmationStatus,
+        err: status.err,
+      };
     },
   };
 }
@@ -174,6 +196,7 @@ test(
     const result = await reconcileExecution(
       journal.executionId,
       createFakeRpc({
+        slot: 123_456,
         confirmationStatus: 'confirmed',
         err: null,
       })
@@ -181,11 +204,19 @@ test(
 
     assert.equal(result.action, 'confirmed');
     assert.equal(result.journal.status, 'confirmed');
+    assert.equal(
+      result.journal.confirmedSlot,
+      123_456
+    );
+    assert.equal(
+      result.journal.confirmationStatus,
+      'confirmed'
+    );
   }
 );
 
 test(
-  'finalized status becomes confirmed',
+  'finalized status becomes confirmed with finalized evidence',
   async () => {
     await configureEnvironment();
     await cleanAll();
@@ -199,6 +230,7 @@ test(
     const result = await reconcileExecution(
       journal.executionId,
       createFakeRpc({
+        slot: 654_321,
         confirmationStatus: 'finalized',
         err: null,
       })
@@ -206,6 +238,14 @@ test(
 
     assert.equal(result.action, 'confirmed');
     assert.equal(result.journal.status, 'confirmed');
+    assert.equal(
+      result.journal.confirmedSlot,
+      654_321
+    );
+    assert.equal(
+      result.journal.confirmationStatus,
+      'finalized'
+    );
   }
 );
 
@@ -224,6 +264,7 @@ test(
     const result = await reconcileExecution(
       journal.executionId,
       createFakeRpc({
+        slot: 999_888,
         confirmationStatus: null,
         err: { InstructionError: [0, 'Custom'] },
       })
@@ -231,6 +272,10 @@ test(
 
     assert.equal(result.action, 'failed');
     assert.equal(result.journal.status, 'failed');
+    assert.equal(
+      result.journal.failedSlot,
+      999_888
+    );
     assert.match(
       result.journal.failureReason ?? '',
       /On-chain transaction error/i
@@ -372,6 +417,7 @@ test(
     const rpc: ExecutionStatusRpc = {
       async getSignatureStatus() {
         return {
+          slot: 100,
           confirmationStatus: 'confirmed',
           err: null,
         };

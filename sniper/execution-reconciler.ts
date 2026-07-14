@@ -12,6 +12,8 @@ import type {
 } from './execution-journal.js';
 
 export interface ExecutionSignatureStatus {
+  slot: number;
+
   confirmationStatus:
     | 'processed'
     | 'confirmed'
@@ -62,6 +64,9 @@ implements ExecutionStatusRpc {
     }
 
     return {
+      slot:
+        status.slot,
+
       confirmationStatus:
         status.confirmationStatus ??
         null,
@@ -177,7 +182,8 @@ export async function reconcileExecution(
 
     const failed = await markSubmittedExecutionFailed(
       executionId,
-      `On-chain transaction error: ${JSON.stringify(rpcStatus.err)}`
+      `On-chain transaction error: ${JSON.stringify(rpcStatus.err)}`,
+      rpcStatus.slot
     );
 
     return {
@@ -187,11 +193,26 @@ export async function reconcileExecution(
     };
   }
 
+  const confirmationStatus =
+    rpcStatus
+      .confirmationStatus;
+
   if (
-    rpcStatus.confirmationStatus === 'confirmed' ||
-    rpcStatus.confirmationStatus === 'finalized'
+    confirmationStatus ===
+      'confirmed' ||
+    confirmationStatus ===
+      'finalized'
   ) {
-    const confirmed = await markExecutionConfirmed(executionId);
+    const confirmed =
+      await markExecutionConfirmed(
+        executionId,
+        {
+          slot:
+            rpcStatus.slot,
+
+          confirmationStatus,
+        }
+      );
 
     return {
       action: 'confirmed',

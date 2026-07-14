@@ -55,7 +55,12 @@ export interface ExecutionJournal {
 
   submittedAt?: string;
   confirmedAt?: string;
+  confirmedSlot?: number;
+  confirmationStatus?:
+    | 'confirmed'
+    | 'finalized';
   failedAt?: string;
+  failedSlot?: number;
   failureReason?: string;
 
   /*
@@ -306,6 +311,33 @@ function validateJournal(
     }
 
     assertIsoTimestamp(journal.confirmedAt, 'Execution confirmedAt');
+
+    if (
+      !Number.isSafeInteger(
+        journal.confirmedSlot
+      ) ||
+      (
+        journal.confirmedSlot ??
+        -1
+      ) < 0
+    ) {
+      throw new Error(
+        'Confirmed execution has invalid confirmedSlot'
+      );
+    }
+
+    if (
+      journal
+        .confirmationStatus !==
+        'confirmed' &&
+      journal
+        .confirmationStatus !==
+        'finalized'
+    ) {
+      throw new Error(
+        'Confirmed execution has invalid confirmationStatus'
+      );
+    }
   }
 
   if (journal.status === 'failed') {
@@ -720,9 +752,30 @@ export function markExecutionSubmitted(
   );
 }
 
+export interface ConfirmationEvidence {
+  slot: number;
+
+  confirmationStatus:
+    | 'confirmed'
+    | 'finalized';
+}
+
 export function markExecutionConfirmed(
-  executionId: string
+  executionId: string,
+  evidence:
+    ConfirmationEvidence
 ) {
+  if (
+    !Number.isSafeInteger(
+      evidence.slot
+    ) ||
+    evidence.slot < 0
+  ) {
+    throw new Error(
+      'Confirmation slot is invalid'
+    );
+  }
+
   return transitionExecution(
     executionId,
     [
@@ -740,6 +793,7 @@ export function markExecutionConfirmed(
 
       return {
         ...withoutHash,
+
         status: 'confirmed',
 
         submittedAt:
@@ -748,6 +802,14 @@ export function markExecutionConfirmed(
           now,
 
         confirmedAt: now,
+
+        confirmedSlot:
+          evidence.slot,
+
+        confirmationStatus:
+          evidence
+            .confirmationStatus,
+
         updatedAt: now,
       };
     }
@@ -786,9 +848,22 @@ export function markExecutionFailed(
 
 export function markSubmittedExecutionFailed(
   executionId: string,
-  failureReason: string
+  failureReason: string,
+  failedSlot: number
 ) {
-  const reason = failureReason.trim();
+  if (
+    !Number.isSafeInteger(
+      failedSlot
+    ) ||
+    failedSlot < 0
+  ) {
+    throw new Error(
+      'Failure slot is invalid'
+    );
+  }
+
+  const reason =
+    failureReason.trim();
 
   if (!reason) {
     throw new Error(
@@ -803,14 +878,29 @@ export function markSubmittedExecutionFailed(
       'submitted',
     ],
     (current) => {
-      const { journalSha256: _, ...withoutHash } = current;
-      const now = new Date().toISOString();
+      const {
+        journalSha256: _,
+        ...withoutHash
+      } = current;
+
+      const now =
+        new Date().toISOString();
 
       return {
         ...withoutHash,
+
         status: 'failed',
+
         failedAt: now,
-        failureReason: reason.slice(0, 500),
+
+        failedSlot,
+
+        failureReason:
+          reason.slice(
+            0,
+            500
+          ),
+
         updatedAt: now,
       };
     }
