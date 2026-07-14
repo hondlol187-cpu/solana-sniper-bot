@@ -52,6 +52,7 @@ export interface ExecutionJournal {
   transactionMessageSha256?: string;
   lastValidBlockHeight?: number;
   broadcastPreparedAt?: string;
+  riskReservationId?: string;
 
   submittedAt?: string;
   confirmedAt?: string;
@@ -288,6 +289,18 @@ function validateJournal(
       journal.broadcastPreparedAt,
       'Execution broadcastPreparedAt'
     );
+
+    if (
+      !/^[0-9a-f]{32}$/.test(
+        journal
+          .riskReservationId ??
+        ''
+      )
+    ) {
+      throw new Error(
+        `${journal.status} execution has invalid risk reservation ID`
+      );
+    }
   }
 
   if (
@@ -495,6 +508,27 @@ export function buildExecutionId(
     .slice(0, 32);
 }
 
+export function buildRiskReservationId(
+  executionId: string
+): string {
+  if (
+    !/^[A-Za-z0-9_-]{1,128}$/.test(
+      executionId
+    )
+  ) {
+    throw new Error(
+      'Execution ID is invalid'
+    );
+  }
+
+  return createHash('sha256')
+    .update(
+      `execution-risk-v1:${executionId}`
+    )
+    .digest('hex')
+    .slice(0, 32);
+}
+
 export async function beginExecution(
   planId: string,
   planInstanceId: string,
@@ -550,6 +584,10 @@ export async function beginExecution(
         planInstanceId,
         artifactId,
         status: 'ready',
+        riskReservationId:
+          buildRiskReservationId(
+            executionId
+          ),
         createdAt: now,
         updatedAt: now,
       });

@@ -8,7 +8,10 @@ import {
 } from 'node:fs/promises';
 
 import { config } from './config.js';
-import { audit } from './audit.js';
+import {
+  audit,
+  auditOnce,
+} from './audit.js';
 
 import {
   withFileLock,
@@ -269,129 +272,244 @@ function reservedTotal(
   );
 }
 
-export async function reserveTrade(
+function validateReservationId(
+  reservationId: string
+): void {
+  if (
+    !/^[A-Za-z0-9_-]{1,128}$/.test(
+      reservationId
+    )
+  ) {
+    throw new Error(
+      'Risk reservation ID is invalid'
+    );
+  }
+}
+
+async function reserveTradeWithId(
+  reservationId: string,
   mint: string,
   amountLamports: bigint,
   currentBalanceLamports: bigint
 ): Promise<RiskReservation> {
-  return serialize(async () => {
-    const state = await loadUnsafe(
-      currentBalanceLamports
+  validateReservationId(
+    reservationId
+  );
+
+  if (
+    amountLamports <= 0n
+  ) {
+    throw new Error(
+      'Risk reservation amount must be positive'
     );
+  }
 
-    if (state.haltedReason) {
-      throw new Error(
-        `Risk circuit breaker is halted: ${state.haltedReason}`
-      );
-    }
-
-    const openingBalance = BigInt(
-      state.openingBalanceLamports
+  if (!mint.trim()) {
+    throw new Error(
+      'Risk reservation mint is required'
     );
+  }
 
-    const drawdown =
-      openingBalance >
-      currentBalanceLamports
-        ? openingBalance -
+  return serialize(
+    async () => {
+      const state =
+        await loadUnsafe(
           currentBalanceLamports
-        : 0n;
+        );
 
-    const maximumDrawdown =
-      solToLamports(
-        config.maxDailyDrawdownSol
-      );
+      const existing =
+        state.reservations.find(
+          (reservation) =>
+            reservation.id ===
+            reservationId
+        );
 
-    if (
-      drawdown > maximumDrawdown
-    ) {
-      state.haltedReason =
-        `Daily drawdown exceeded: ${drawdown} lamports`;
+      if (existing) {
+        if (
+          existing.mint !== mint ||
+          existing
+            .amountLamports !==
+            amountLamports.toString()
+        ) {
+          throw new Error(
+            'Existing risk reservation does not match requested trade'
+          );
+        }
 
-      await saveUnsafe(state);
-
-      throw new Error(
-        state.haltedReason
-      );
-    }
-
-    const spent = BigInt(
-      state.spentLamports
-    );
-
-    const projectedSpend =
-      spent +
-      reservedTotal(state) +
-      amountLamports;
-
-    const maximumSpend =
-      solToLamports(
-        config.maxDailySpendSol
-      );
-
-    if (
-      projectedSpend >
-      maximumSpend
-    ) {
-      state.haltedReason =
-        `Daily spend limit exceeded: projected ${projectedSpend}, maximum ${maximumSpend}`;
-
-      await saveUnsafe(state);
-
-      throw new Error(
-        state.haltedReason
-      );
-    }
-
-    const projectedTradeCount =
-      state.completedTrades +
-      state.reservations.length +
-      1;
-
-    if (
-      projectedTradeCount >
-      config.maxDailyTrades
-    ) {
-      state.haltedReason =
-        `Daily trade limit exceeded: ${projectedTradeCount}/${config.maxDailyTrades}`;
-
-      await saveUnsafe(state);
-
-      throw new Error(
-        state.haltedReason
-      );
-    }
-
-    const reservation: RiskReservation = {
-      id: randomUUID(),
-      mint,
-      amountLamports:
-        amountLamports.toString(),
-      createdAt:
-        new Date().toISOString(),
-    };
-
-    state.reservations.push(
-      reservation
-    );
-
-    await saveUnsafe(state);
-
-    await audit(
-      'risk.trade.reserved',
-      {
-        reservationId:
-          reservation.id,
-        mint,
-        amountLamports:
-          amountLamports.toString(),
-        projectedSpend:
-          projectedSpend.toString(),
-        projectedTradeCount,
+        return existing;
       }
-    );
 
-    return reservation;
-  });
+      if (
+        state
+          .committedReservationIds
+          .includes(
+            reservationId
+          )
+      ) {
+        throw new Error(
+          'Risk reservation has already been committed'
+        );
+      }
+
+      if (state.haltedReason) {
+        throw new Error(
+          `Risk circuit breaker is halted: ${state.haltedReason}`
+        );
+      }
+
+      const openingBalance =
+        BigInt(
+          state
+            .openingBalanceLamports
+        );
+
+      const drawdown =
+        openingBalance >
+        currentBalanceLamports
+          ? openingBalance -
+            currentBalanceLamports
+          : 0n;
+
+      const maximumDrawdown =
+        solToLamports(
+          config
+            .maxDailyDrawdownSol
+        );
+
+      if (
+        drawdown >
+        maximumDrawdown
+      ) {
+        state.haltedReason =
+          `Daily drawdown exceeded: ${drawdown} lamports`;
+
+        await saveUnsafe(
+          state
+        );
+
+        throw new Error(
+          state.haltedReason
+        );
+      }
+
+      const spent =
+        BigInt(
+          state.spentLamports
+        );
+
+      const projectedSpend =
+        spent +
+        reservedTotal(state) +
+        amountLamports;
+
+      const maximumSpend =
+        solToLamports(
+          config.maxDailySpendSol
+        );
+
+      if (
+        projectedSpend >
+        maximumSpend
+      ) {
+        state.haltedReason =
+          `Daily spend limit exceeded: projected ${projectedSpend}, maximum ${maximumSpend}`;
+
+        await saveUnsafe(
+          state
+        );
+
+        throw new Error(
+          state.haltedReason
+        );
+      }
+
+      const projectedTradeCount =
+        state.completedTrades +
+        state.reservations.length +
+        1;
+
+      if (
+        projectedTradeCount >
+        config.maxDailyTrades
+      ) {
+        state.haltedReason =
+          `Daily trade limit exceeded: ${projectedTradeCount}/${config.maxDailyTrades}`;
+
+        await saveUnsafe(
+          state
+        );
+
+        throw new Error(
+          state.haltedReason
+        );
+      }
+
+      const reservation:
+        RiskReservation = {
+          id: reservationId,
+          mint,
+          amountLamports:
+            amountLamports
+              .toString(),
+          createdAt:
+            new Date()
+              .toISOString(),
+        };
+
+      state.reservations.push(
+        reservation
+      );
+
+      await saveUnsafe(
+        state
+      );
+
+      await auditOnce(
+        'risk.trade.reserved',
+        `risk-reserved:${reservationId}`,
+        {
+          reservationId,
+          mint,
+          amountLamports:
+            amountLamports
+              .toString(),
+          projectedSpend:
+            projectedSpend
+              .toString(),
+          projectedTradeCount,
+        }
+      );
+
+      return reservation;
+    }
+  );
+}
+
+export function reserveTrade(
+  mint: string,
+  amountLamports: bigint,
+  currentBalanceLamports: bigint
+) {
+  return reserveTradeWithId(
+    randomUUID(),
+    mint,
+    amountLamports,
+    currentBalanceLamports
+  );
+}
+
+export function reserveTradeOnce(
+  reservationId: string,
+  mint: string,
+  amountLamports: bigint,
+  currentBalanceLamports: bigint
+) {
+  return reserveTradeWithId(
+    reservationId,
+    mint,
+    amountLamports,
+    currentBalanceLamports
+  );
 }
 
 export async function commitReservation(

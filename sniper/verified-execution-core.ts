@@ -40,6 +40,11 @@ import {
   auditExecutionSubmitted,
 } from './execution-audit.js';
 
+import {
+  releaseReservation,
+  reserveTradeOnce,
+} from './risk.js';
+
 function sha256(
   value:
     Buffer |
@@ -219,6 +224,36 @@ export async function executeVerifiedPlan(
     journal
   );
 
+  const riskReservationId =
+    journal
+      .riskReservationId;
+
+  if (!riskReservationId) {
+    throw new Error(
+      'Execution journal has no risk reservation ID'
+    );
+  }
+
+  const currentBalance =
+    BigInt(
+      await connection.getBalance(
+        signer.publicKey,
+        'confirmed'
+      )
+    );
+
+  const buyLamports =
+    BigInt(
+      plan.payload.buyLamports
+    );
+
+  await reserveTradeOnce(
+    riskReservationId,
+    plan.payload.exactMint,
+    buyLamports,
+    currentBalance
+  );
+
   await markExecutionSigning(
     journal.executionId
   );
@@ -346,6 +381,29 @@ export async function executeVerifiedPlan(
       await auditExecutionFailed(
         failed
       );
+
+      try {
+        const balance =
+          BigInt(
+            await connection
+              .getBalance(
+                signer.publicKey,
+                'confirmed'
+              )
+          );
+
+        await releaseReservation(
+          riskReservationId,
+          plan.payload.exactMint,
+          balance
+        );
+      } catch {
+        /*
+         * Fail closed: leave unresolved reservation visible
+         * for doctor/recovery rather than hiding the original
+         * execution error.
+         */
+      }
     }
 
     throw error;
