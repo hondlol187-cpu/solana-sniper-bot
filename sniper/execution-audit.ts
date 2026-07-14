@@ -1,5 +1,9 @@
 import {
-  audit,
+  createHash,
+} from 'node:crypto';
+
+import {
+  auditOnce,
 } from './audit.js';
 
 import type {
@@ -23,6 +27,10 @@ function common(
     artifactId:
       journal.artifactId,
 
+    riskReservationId:
+      journal
+        .riskReservationId,
+
     status:
       journal.status,
 
@@ -35,13 +43,53 @@ function common(
   };
 }
 
+function eventId(
+  event: string,
+  journal:
+    ExecutionJournal
+): string {
+  return createHash('sha256')
+    .update(
+      [
+        'execution-audit-v1',
+        event,
+        journal.executionId,
+        journal.status,
+        journal.journalSha256,
+      ].join(':')
+    )
+    .digest('hex');
+}
+
+function writeOnce(
+  event: string,
+  journal:
+    ExecutionJournal,
+  extra: Record<
+    string,
+    unknown
+  > = {}
+) {
+  return auditOnce(
+    event,
+    eventId(
+      event,
+      journal
+    ),
+    {
+      ...common(journal),
+      ...extra,
+    }
+  );
+}
+
 export function auditExecutionReady(
   journal:
     ExecutionJournal
 ) {
-  return audit(
+  return writeOnce(
     'candidate.execution.ready',
-    common(journal)
+    journal
   );
 }
 
@@ -49,11 +97,10 @@ export function auditExecutionBroadcasting(
   journal:
     ExecutionJournal
 ) {
-  return audit(
+  return writeOnce(
     'candidate.execution.broadcasting',
+    journal,
     {
-      ...common(journal),
-
       signedTransactionSha256:
         journal
           .signedTransactionSha256,
@@ -73,9 +120,9 @@ export function auditExecutionSubmitted(
   journal:
     ExecutionJournal
 ) {
-  return audit(
+  return writeOnce(
     'candidate.execution.submitted',
-    common(journal)
+    journal
   );
 }
 
@@ -83,11 +130,10 @@ export function auditExecutionConfirmed(
   journal:
     ExecutionJournal
 ) {
-  return audit(
+  return writeOnce(
     'candidate.execution.confirmed',
+    journal,
     {
-      ...common(journal),
-
       confirmedSlot:
         journal.confirmedSlot,
 
@@ -102,11 +148,10 @@ export function auditExecutionFailed(
   journal:
     ExecutionJournal
 ) {
-  return audit(
+  return writeOnce(
     'candidate.execution.failed',
+    journal,
     {
-      ...common(journal),
-
       failedSlot:
         journal.failedSlot,
 

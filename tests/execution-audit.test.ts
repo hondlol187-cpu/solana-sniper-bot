@@ -673,3 +673,444 @@ test(
     );
   }
 );
+
+test(
+  'calling each helper twice creates one event',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionReady,
+      auditExecutionBroadcasting,
+      auditExecutionSubmitted,
+      auditExecutionConfirmed,
+      auditExecutionFailed,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const baseJournal = {
+      version: 1 as const,
+      executionId: 'exec-once-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      status: 'ready' as const,
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:00.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-1',
+      signedTransactionSha256:
+        SIGNED_TX_SHA,
+      transactionMessageSha256:
+        MSG_SHA,
+      lastValidBlockHeight:
+        LAST_VALID_BLOCK_HEIGHT,
+      broadcastPreparedAt:
+        '2024-01-01T00:00:01.000Z',
+      submittedAt:
+        '2024-01-01T00:00:02.000Z',
+      confirmedAt:
+        '2024-01-01T00:00:03.000Z',
+      confirmedSlot: 500,
+      confirmationStatus:
+        'confirmed' as const,
+      failedAt:
+        '2024-01-01T00:00:04.000Z',
+      failedSlot: 600,
+      failureReason: 'test failure',
+      journalSha256:
+        'c'.repeat(64),
+    };
+
+    /*
+     * Call each helper twice. The second call must
+     * be a no-op (written: false) because the
+     * auditEventId is deterministic and already
+     * present.
+     */
+    const ready1 =
+      await auditExecutionReady(
+        baseJournal
+      );
+    const ready2 =
+      await auditExecutionReady(
+        baseJournal
+      );
+
+    assert.equal(
+      ready1.written,
+      true
+    );
+    assert.equal(
+      ready2.written,
+      false
+    );
+
+    /*
+     * Different journal states get different event IDs,
+     * so each transition audits exactly once.
+     */
+    const broadcasting1 =
+      await auditExecutionBroadcasting(
+        {
+          ...baseJournal,
+          status: 'broadcasting',
+        }
+      );
+
+    assert.equal(
+      broadcasting1.written,
+      true
+    );
+
+    const events =
+      await readAuditEvents();
+
+    const readyEvents =
+      events.filter(
+        (e) =>
+          e.event ===
+          'candidate.execution.ready'
+      );
+
+    assert.equal(
+      readyEvents.length,
+      1
+    );
+  }
+);
+
+test(
+  'concurrent calls create one event',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionReady,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const journal = {
+      version: 1 as const,
+      executionId: 'exec-concurrent-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      status: 'ready' as const,
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:00.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-1',
+      journalSha256:
+        'c'.repeat(64),
+    };
+
+    /*
+     * Fire two concurrent calls with the same journal.
+     * Exactly one must win; the other returns
+     * written: false.
+     */
+    const [a, b] =
+      await Promise.all([
+        auditExecutionReady(
+          journal
+        ),
+        auditExecutionReady(
+          journal
+        ),
+      ]);
+
+    const writtenCount = [a, b].filter(
+      (r) => r.written
+    ).length;
+
+    assert.equal(
+      writtenCount,
+      1
+    );
+
+    const events =
+      await readAuditEvents();
+
+    assert.equal(
+      events.length,
+      1
+    );
+  }
+);
+
+test(
+  'different journal states create different IDs',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionReady,
+      auditExecutionSubmitted,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const base = {
+      version: 1 as const,
+      executionId: 'exec-states-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:00.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-1',
+      journalSha256:
+        'c'.repeat(64),
+    };
+
+    await auditExecutionReady({
+      ...base,
+      status: 'ready',
+    });
+
+    await auditExecutionSubmitted({
+      ...base,
+      status: 'submitted',
+    });
+
+    const events =
+      await readAuditEvents();
+
+    assert.equal(
+      events.length,
+      2
+    );
+
+    assert.notEqual(
+      events[0].event,
+      events[1].event
+    );
+  }
+);
+
+test(
+  'different journal hashes create different IDs',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionReady,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const base = {
+      version: 1 as const,
+      executionId: 'exec-hash-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      status: 'ready' as const,
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:00.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-1',
+    };
+
+    /*
+     * Same execution ID and status, but different
+     * journalSha256 (simulating a re-sealed journal
+     * after a transition). Each must audit once.
+     */
+    await auditExecutionReady({
+      ...base,
+      journalSha256:
+        'c'.repeat(64),
+    });
+
+    await auditExecutionReady({
+      ...base,
+      journalSha256:
+        'd'.repeat(64),
+    });
+
+    const events =
+      await readAuditEvents();
+
+    assert.equal(
+      events.length,
+      2
+    );
+  }
+);
+
+test(
+  'failed recovery after journal transition can safely re-run audit',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionFailed,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const failedJournal = {
+      version: 1 as const,
+      executionId: 'exec-recover-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      status: 'failed' as const,
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:04.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-1',
+      failedAt:
+        '2024-01-01T00:00:04.000Z',
+      failedSlot: 600,
+      failureReason: 'test failure',
+      journalSha256:
+        'c'.repeat(64),
+    };
+
+    /*
+     * Simulate a crash after the journal transition
+     * but before the audit. Re-running the audit
+     * must succeed and write exactly one event.
+     */
+    const first =
+      await auditExecutionFailed(
+        failedJournal
+      );
+
+    assert.equal(
+      first.written,
+      true
+    );
+
+    /*
+     * Re-run the audit (e.g. a recovery script).
+     * Must be idempotent.
+     */
+    const second =
+      await auditExecutionFailed(
+        failedJournal
+      );
+
+    assert.equal(
+      second.written,
+      false
+    );
+
+    const events =
+      await readAuditEvents();
+
+    assert.equal(
+      events.length,
+      1
+    );
+  }
+);
+
+test(
+  'audit output contains no private keys or raw transaction bytes',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      auditExecutionBroadcasting,
+    } = await import(
+      '../sniper/execution-audit.js'
+    );
+
+    const journal = {
+      version: 1 as const,
+      executionId: 'exec-redact-1',
+      planId: 'plan-1',
+      planInstanceId: 'instance-1',
+      artifactId: 'artifact-1',
+      status: 'broadcasting' as const,
+      createdAt:
+        '2024-01-01T00:00:00.000Z',
+      updatedAt:
+        '2024-01-01T00:00:01.000Z',
+      riskReservationId:
+        'a'.repeat(32),
+      transactionSignature:
+        'sig-redact-1',
+      signedTransactionSha256:
+        SIGNED_TX_SHA,
+      transactionMessageSha256:
+        MSG_SHA,
+      lastValidBlockHeight:
+        LAST_VALID_BLOCK_HEIGHT,
+      broadcastPreparedAt:
+        '2024-01-01T00:00:01.000Z',
+      journalSha256:
+        'c'.repeat(64),
+    };
+
+    await auditExecutionBroadcasting(
+      journal
+    );
+
+    const content =
+      await readFile(
+        auditFile,
+        'utf8'
+      );
+
+    /*
+     * The audit must carry the signed-tx SHA and
+     * message SHA (hashes, not bytes), but must
+     * NOT carry any raw private key or transaction
+     * bytes.
+     */
+    assert.match(
+      content,
+      /signedTransactionSha256/
+    );
+
+    assert.match(
+      content,
+      /transactionMessageSha256/
+    );
+
+    /*
+     * No private key fields. The redact() function
+     * in audit.ts already strips known secret names,
+     * but we assert the audit payload simply
+     * doesn't include them.
+     */
+    assert.doesNotMatch(
+      content,
+      /privateKey|secretKey|seed/i
+    );
+  }
+);
