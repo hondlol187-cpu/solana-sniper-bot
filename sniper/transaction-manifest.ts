@@ -98,6 +98,324 @@ export interface ApprovedTransactionPolicy {
   maximumHeapFrameBytes?: number;
 }
 
+export interface TransactionPolicyValidation {
+  ok: boolean;
+  reasons: string[];
+  sha256: string;
+}
+
+function sortedUnique(
+  values: string[]
+): string[] {
+  return [
+    ...new Set(values),
+  ].sort();
+}
+
+function isValidPublicKey(
+  value: string
+): boolean {
+  try {
+    new PublicKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function computeApprovedTransactionPolicySha256(
+  policy: ApprovedTransactionPolicy
+): string {
+  const canonical = {
+    allowedProgramIds:
+      sortedUnique(
+        policy.allowedProgramIds
+      ),
+
+    requiredRouteAccounts:
+      sortedUnique(
+        policy.requiredRouteAccounts
+      ),
+
+    allowedWritableAccounts:
+      sortedUnique(
+        policy.allowedWritableAccounts
+      ),
+
+    allowedReadonlyAccounts:
+      sortedUnique(
+        policy.allowedReadonlyAccounts ??
+        []
+      ),
+
+    walletTokenAccounts:
+      sortedUnique(
+        policy.walletTokenAccounts
+      ),
+
+    expectedInputMint:
+      policy.expectedInputMint,
+
+    expectedOutputMint:
+      policy.expectedOutputMint,
+
+    maximumComputeUnitLimit:
+      policy.maximumComputeUnitLimit,
+
+    maximumComputeUnitPriceMicroLamports:
+      policy
+        .maximumComputeUnitPriceMicroLamports,
+
+    maximumHeapFrameBytes:
+      policy.maximumHeapFrameBytes ??
+      262_144,
+  };
+
+  return createHash('sha256')
+    .update(
+      stableStringify(
+        canonical
+      )
+    )
+    .digest('hex');
+}
+
+export function validateApprovedTransactionPolicy(
+  policy: ApprovedTransactionPolicy,
+  plan: ApprovedExecutionPlanFile
+): TransactionPolicyValidation {
+  const reasons: string[] = [];
+
+  const addressLists = [
+    {
+      name: 'allowedProgramIds',
+      values:
+        policy.allowedProgramIds,
+    },
+    {
+      name: 'requiredRouteAccounts',
+      values:
+        policy.requiredRouteAccounts,
+    },
+    {
+      name: 'allowedWritableAccounts',
+      values:
+        policy.allowedWritableAccounts,
+    },
+    {
+      name: 'allowedReadonlyAccounts',
+      values:
+        policy.allowedReadonlyAccounts ??
+        [],
+    },
+    {
+      name: 'walletTokenAccounts',
+      values:
+        policy.walletTokenAccounts,
+    },
+  ];
+
+  for (
+    const list of
+    addressLists
+  ) {
+    for (
+      const value of
+      list.values
+    ) {
+      if (
+        !isValidPublicKey(value)
+      ) {
+        reasons.push(
+          `Transaction policy ${list.name} contains invalid public key: ${value}`
+        );
+      }
+    }
+
+    if (
+      new Set(
+        list.values
+      ).size !==
+      list.values.length
+    ) {
+      reasons.push(
+        `Transaction policy ${list.name} contains duplicates`
+      );
+    }
+  }
+
+  if (
+    policy.allowedProgramIds
+      .length === 0
+  ) {
+    reasons.push(
+      'Transaction policy allowedProgramIds is empty'
+    );
+  }
+
+  for (
+    const programId of
+    policy.allowedProgramIds
+  ) {
+    if (
+      FORBIDDEN_PROGRAM_IDS.has(
+        programId
+      )
+    ) {
+      reasons.push(
+        `Transaction policy allows forbidden program: ${programId}`
+      );
+    }
+  }
+
+  const expectedRouteAccounts =
+    sortedUnique(
+      plan.payload.routeAmmKeys
+    );
+
+  const policyRouteAccounts =
+    sortedUnique(
+      policy.requiredRouteAccounts
+    );
+
+  if (
+    JSON.stringify(
+      policyRouteAccounts
+    ) !==
+    JSON.stringify(
+      expectedRouteAccounts
+    )
+  ) {
+    reasons.push(
+      'Transaction policy route accounts do not exactly match the approved route'
+    );
+  }
+
+  if (
+    policy.expectedInputMint !==
+    plan.payload.quoteInputMint
+  ) {
+    reasons.push(
+      'Transaction policy input mint does not match approved quote'
+    );
+  }
+
+  if (
+    policy.expectedOutputMint !==
+    plan.payload.quoteOutputMint
+  ) {
+    reasons.push(
+      'Transaction policy output mint does not match approved quote'
+    );
+  }
+
+  const allowedWritable =
+    new Set(
+      policy.allowedWritableAccounts
+    );
+
+  if (
+    !allowedWritable.has(
+      plan.payload.walletPublicKey
+    )
+  ) {
+    reasons.push(
+      'Transaction policy does not allow the plan wallet as writable'
+    );
+  }
+
+  for (
+    const routeAccount of
+    expectedRouteAccounts
+  ) {
+    if (
+      !allowedWritable.has(
+        routeAccount
+      )
+    ) {
+      reasons.push(
+        `Transaction policy does not allow route account as writable: ${routeAccount}`
+      );
+    }
+  }
+
+  for (
+    const tokenAccount of
+    policy.walletTokenAccounts
+  ) {
+    if (
+      !allowedWritable.has(
+        tokenAccount
+      )
+    ) {
+      reasons.push(
+        `Wallet token account is not in allowedWritableAccounts: ${tokenAccount}`
+      );
+    }
+  }
+
+  if (
+    !Number.isSafeInteger(
+      policy.maximumComputeUnitLimit
+    ) ||
+    policy.maximumComputeUnitLimit <=
+      0 ||
+    policy.maximumComputeUnitLimit >
+      1_400_000
+  ) {
+    reasons.push(
+      'Transaction policy maximumComputeUnitLimit is invalid'
+    );
+  }
+
+  if (
+    !Number.isSafeInteger(
+      policy
+        .maximumComputeUnitPriceMicroLamports
+    ) ||
+    policy
+      .maximumComputeUnitPriceMicroLamports <
+      0
+  ) {
+    reasons.push(
+      'Transaction policy maximumComputeUnitPriceMicroLamports is invalid'
+    );
+  }
+
+  const maximumHeapFrameBytes =
+    policy.maximumHeapFrameBytes ??
+    262_144;
+
+  if (
+    !Number.isSafeInteger(
+      maximumHeapFrameBytes
+    ) ||
+    maximumHeapFrameBytes <
+      32_768 ||
+    maximumHeapFrameBytes >
+      262_144 ||
+    maximumHeapFrameBytes %
+      1_024 !==
+      0
+  ) {
+    reasons.push(
+      'Transaction policy maximumHeapFrameBytes is invalid'
+    );
+  }
+
+  return {
+    ok:
+      reasons.length === 0,
+
+    reasons,
+
+    sha256:
+      computeApprovedTransactionPolicySha256(
+        policy
+      ),
+  };
+}
+
 /*
  * Stable stringify for deterministic hashing.
  */

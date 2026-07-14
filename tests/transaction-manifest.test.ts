@@ -131,7 +131,26 @@ function buildPayload(
     quoteAgeMs: 1_000,
     liquidityDropPct: 10,
 
-    ...overrides,
+    
+    transactionPolicy: {
+      allowedProgramIds: [
+        'ComputeBudget111111111111111111111111111111',
+        'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      ],
+      requiredRouteAccounts: [POOL],
+      allowedWritableAccounts: [
+        WALLET,
+        POOL,
+      ],
+      walletTokenAccounts: [POOL],
+      expectedInputMint:
+        'So11111111111111111111111111111111111111112',
+      expectedOutputMint: TOKEN_MINT,
+      maximumComputeUnitLimit: 1_000_000,
+      maximumComputeUnitPriceMicroLamports: 1_000_000,
+      maximumHeapFrameBytes: 131_072,
+    },
+...overrides,
   };
 }
 

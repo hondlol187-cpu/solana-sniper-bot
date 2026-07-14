@@ -134,6 +134,7 @@ export interface SimulationReceipt {
   writableAccountsSha256?: string;
   instructionDataSha256?: string;
   transactionPolicyOk?: boolean;
+  transactionPolicySha256?: string;
 
   walletPublicKey: string;
   expectedCluster: string;
@@ -1195,9 +1196,40 @@ export async function commitSimulationArtifact(
     assessTransactionManifest,
     computeWritableAccountsSha256,
     computeInstructionDataSha256,
+    validateApprovedTransactionPolicy,
+    computeApprovedTransactionPolicySha256,
   } = await import(
     './transaction-manifest.js'
   );
+
+  const transactionPolicy =
+    planFile.payload
+      .transactionPolicy;
+
+  if (!transactionPolicy) {
+    throw new Error(
+      [
+        'Approved execution plan has no transaction-policy snapshot.',
+        'Re-prepare the plan before simulation.',
+      ].join(' ')
+    );
+  }
+
+  const policyValidation =
+    validateApprovedTransactionPolicy(
+      transactionPolicy,
+      planFile
+    );
+
+  if (!policyValidation.ok) {
+    throw new Error(
+      [
+        'Approved transaction policy is invalid:',
+        ...policyValidation
+          .reasons,
+      ].join(' ')
+    );
+  }
 
   const manifest =
     await buildTransactionManifest(
@@ -1419,6 +1451,9 @@ export async function commitSimulationArtifact(
     transactionPolicyOk:
       policyResult.ok,
 
+    transactionPolicySha256:
+      policyValidation.sha256,
+
     walletPublicKey:
       expectedWallet,
 
@@ -1458,6 +1493,34 @@ export async function commitSimulationArtifact(
       ) {
         throw new Error(
           'Approved execution plan changed between simulation and commit'
+        );
+      }
+
+      /*
+       * Require policy consistency under the lock.
+       */
+      const lockedPolicy =
+        file.payload
+          .transactionPolicy;
+
+      if (!lockedPolicy) {
+        throw new Error(
+          'Approved execution plan transaction policy disappeared before commit'
+        );
+      }
+
+      const lockedPolicySha256 =
+        computeApprovedTransactionPolicySha256(
+          lockedPolicy
+        );
+
+      if (
+        lockedPolicySha256 !==
+        receipt
+          .transactionPolicySha256
+      ) {
+        throw new Error(
+          'Approved transaction policy changed between verification and commit'
         );
       }
 
