@@ -458,7 +458,6 @@ export async function simulateAndSend(
 ): Promise<string> {
   const {
     transaction,
-    lastValidBlockHeight,
     wallet,
     quoteReceivedAtMs,
     expectedMaximumSpendLamports,
@@ -508,103 +507,17 @@ export async function simulateAndSend(
     return 'DRY_RUN';
   }
 
-  if (!signer) {
-    throw new Error(
-      'Live trading requires a signer'
-    );
-  }
-
-  if (
-    !signer.publicKey.equals(wallet)
-  ) {
-    throw new Error(
-      'Signer does not match the transaction wallet'
-    );
-  }
-
-  transaction.sign([signer]);
-
   /*
-   * Check quote age again immediately before the
-   * signed simulation.
+   * Live broadcasting through this legacy path is intentionally
+   * disabled. The only permitted live broadcast surface is
+   * executeVerifiedPlan in sniper/verified-execution-core.ts,
+   * which signs the exact persisted simulation artifact and
+   * records pre-broadcast evidence in the execution journal
+   * before calling sendRawTransaction. See
+   * tests/live-broadcast-surface.test.ts for the source-level
+   * enforcement.
    */
-  assertQuoteFresh(
-    quoteReceivedAtMs
+  throw new Error(
+    'Live broadcasting is only permitted through executeVerifiedPlan in sniper/verified-execution-core.ts'
   );
-
-  const guard =
-    await simulateWithSpendGuard(
-      connection,
-      transaction,
-      wallet,
-      {
-        expectedMaximumSpendLamports,
-
-        /*
-         * Verify the exact signatures that will be
-         * broadcast.
-         */
-        verifySignatures: true,
-
-        /*
-         * Live simulation must use the actual
-         * transaction blockhash.
-         */
-        replaceRecentBlockhash: false,
-      }
-    );
-
-  if (guard.err) {
-    throw new Error(
-      `Signed simulation failed: ${JSON.stringify(
-        guard.err
-      )}`
-    );
-  }
-
-  console.log(
-    `Signed simulation passed; SOL spend ${guard.simulatedSpendLamports} lamports`
-  );
-
-  /*
-   * Minimize the delay between simulation and
-   * broadcasting.
-   */
-  const signature =
-    await connection.sendRawTransaction(
-      transaction.serialize(),
-      {
-        skipPreflight: false,
-        maxRetries: 3,
-        preflightCommitment:
-          'confirmed',
-      }
-    );
-
-  const confirmation =
-    lastValidBlockHeight
-      ? await connection.confirmTransaction(
-          {
-            signature,
-            blockhash:
-              transaction.message
-                .recentBlockhash,
-            lastValidBlockHeight,
-          },
-          'confirmed'
-        )
-      : await connection.confirmTransaction(
-          signature,
-          'confirmed'
-        );
-
-  if (confirmation.value.err) {
-    throw new Error(
-      `Transaction failed: ${JSON.stringify(
-        confirmation.value.err
-      )}`
-    );
-  }
-
-  return signature;
 }
