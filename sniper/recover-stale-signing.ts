@@ -46,6 +46,11 @@ async function main():
       './execution-journal.js'
     );
 
+  const auditModule =
+    await import(
+      './execution-audit.js'
+    );
+
   const journals =
     await journalModule
       .listExecutionJournals();
@@ -81,6 +86,10 @@ async function main():
             journal.executionId,
             minimumAgeMs
           );
+
+      await auditModule.auditExecutionFailed(
+        updated
+      );
 
       results.push({
         executionId:

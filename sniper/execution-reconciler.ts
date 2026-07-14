@@ -11,6 +11,11 @@ import type {
   ExecutionJournal,
 } from './execution-journal.js';
 
+import {
+  auditExecutionConfirmed,
+  auditExecutionFailed,
+} from './execution-audit.js';
+
 export interface ExecutionSignatureStatus {
   slot: number;
 
@@ -186,6 +191,10 @@ export async function reconcileExecution(
       rpcStatus.slot
     );
 
+    await auditExecutionFailed(
+      failed
+    );
+
     return {
       action: 'failed',
       journal: failed,
@@ -213,6 +222,10 @@ export async function reconcileExecution(
           confirmationStatus,
         }
       );
+
+    await auditExecutionConfirmed(
+      confirmed
+    );
 
     return {
       action: 'confirmed',

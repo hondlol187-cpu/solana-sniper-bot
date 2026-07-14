@@ -33,6 +33,13 @@ import {
   markExecutionSubmitted,
 } from './execution-journal.js';
 
+import {
+  auditExecutionBroadcasting,
+  auditExecutionFailed,
+  auditExecutionReady,
+  auditExecutionSubmitted,
+} from './execution-audit.js';
+
 function sha256(
   value:
     Buffer |
@@ -208,6 +215,10 @@ export async function executeVerifiedPlan(
     );
   }
 
+  await auditExecutionReady(
+    journal
+  );
+
   await markExecutionSigning(
     journal.executionId
   );
@@ -239,30 +250,42 @@ export async function executeVerifiedPlan(
         signatureBytes
       );
 
-    await markExecutionBroadcastReady(
-      journal.executionId,
-      {
-        transactionSignature:
-          deterministicSignature,
+    const broadcasting =
+      await markExecutionBroadcastReady(
+        journal.executionId,
+        {
+          transactionSignature:
+            deterministicSignature,
 
-        signedTransactionSha256:
-          sha256(
+          signedTransactionSha256:
+            sha256(
+              signed
+                .signedTransactionBytes
+            ),
+
+          transactionMessageSha256:
             signed
-              .signedTransactionBytes
-          ),
+              .transactionMessageSha256,
 
-        transactionMessageSha256:
-          signed
-            .transactionMessageSha256,
+          lastValidBlockHeight:
+            receipt
+              .lastValidBlockHeight,
+        }
+      );
 
-        lastValidBlockHeight:
-          receipt
-            .lastValidBlockHeight,
-      }
-    );
-
+    /*
+     * broadcastPrepared is set BEFORE the audit call so that
+     * if the audit throws, the catch block leaves the journal
+     * in 'broadcasting' (an audit failure after durable
+     * evidence is recorded is treated the same as a send
+     * error — ambiguous, never resend).
+     */
     broadcastPrepared =
       true;
+
+    await auditExecutionBroadcasting(
+      broadcasting
+    );
 
     const rpcSignature =
       await connection
@@ -286,9 +309,14 @@ export async function executeVerifiedPlan(
       );
     }
 
-    await markExecutionSubmitted(
-      journal.executionId,
-      rpcSignature
+    const submitted =
+      await markExecutionSubmitted(
+        journal.executionId,
+        rpcSignature
+      );
+
+    await auditExecutionSubmitted(
+      submitted
     );
 
     return {
@@ -307,11 +335,16 @@ export async function executeVerifiedPlan(
      * reconcile by deterministic signature. Never resend.
      */
     if (!broadcastPrepared) {
-      await markExecutionFailed(
-        journal.executionId,
-        error instanceof Error
-          ? error.message
-          : String(error)
+      const failed =
+        await markExecutionFailed(
+          journal.executionId,
+          error instanceof Error
+            ? error.message
+            : String(error)
+        );
+
+      await auditExecutionFailed(
+        failed
       );
     }
 
