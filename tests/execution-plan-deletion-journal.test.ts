@@ -335,7 +335,7 @@ test(
     const {
       writeApprovedExecutionPlan,
       loadApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
     );
@@ -415,7 +415,7 @@ test(
      * Now mutate the plan (simulate it) so its
      * sha256 changes.
      */
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );
@@ -788,7 +788,7 @@ test(
     const {
       writeApprovedExecutionPlan,
       loadApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
     );
@@ -824,7 +824,7 @@ test(
     /*
      * Mutate the plan so its sha256 changes.
      */
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );

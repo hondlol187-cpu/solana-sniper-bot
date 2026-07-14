@@ -884,7 +884,7 @@ test(
       writeApprovedExecutionPlan,
       loadApprovedExecutionPlan,
       commitSimulationArtifact,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
     );
@@ -905,7 +905,7 @@ test(
      * commit the artifact with the old
      * sha256.
      */
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );
@@ -1244,6 +1244,206 @@ test(
         .simulationReceipt
         ?.returnDataSha256 ?? '',
       /^[0-9a-f]{64}$/
+    );
+  }
+);
+
+test(
+  'concurrent artifact commits allow exactly one transition',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const input =
+      buildValidArtifactInput(
+        prepared
+      );
+
+    const results =
+      await Promise.allSettled([
+        commitSimulationArtifact(
+          input,
+          createArtifactRpc()
+        ),
+
+        commitSimulationArtifact(
+          input,
+          createArtifactRpc()
+        ),
+      ]);
+
+    const fulfilled =
+      results.filter(
+        (result) =>
+          result.status ===
+          'fulfilled'
+      );
+
+    const rejected =
+      results.filter(
+        (result) =>
+          result.status ===
+          'rejected'
+      );
+
+    assert.equal(
+      fulfilled.length,
+      1,
+      'exactly one artifact commit must succeed'
+    );
+
+    assert.equal(
+      rejected.length,
+      1,
+      'exactly one artifact commit must reject'
+    );
+
+    const reloaded =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    assert.equal(
+      reloaded.state.status,
+      'simulated'
+    );
+
+    assert.equal(
+      reloaded.state
+        .simulationCount,
+      1
+    );
+
+    assert.ok(
+      reloaded.state
+        .simulationReceipt
+    );
+  }
+);
+
+test(
+  'trusted artifact receipt survives reload and hash verification',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    const committed =
+      await commitSimulationArtifact(
+        buildValidArtifactInput(
+          prepared
+        ),
+        createArtifactRpc()
+      );
+
+    const receipt =
+      committed.state
+        .simulationReceipt;
+
+    assert.ok(receipt);
+
+    const reloaded =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    assert.equal(
+      reloaded.state.status,
+      'simulated'
+    );
+
+    assert.equal(
+      reloaded.state
+        .simulationCount,
+      1
+    );
+
+    assert.deepEqual(
+      reloaded.state
+        .simulationReceipt,
+      receipt
+    );
+
+    assert.match(
+      reloaded.sha256,
+      /^[0-9a-f]{64}$/
+    );
+  }
+);
+
+test(
+  'cancel rejects a plan after trusted artifact commit',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      writeApprovedExecutionPlan,
+      loadApprovedExecutionPlan,
+      commitSimulationArtifact,
+      cancelApprovedExecutionPlan,
+    } = await import(
+      '../sniper/execution-plan.js'
+    );
+
+    const created =
+      await writeApprovedExecutionPlan(
+        buildPayload()
+      );
+
+    const prepared =
+      await loadApprovedExecutionPlan(
+        created.planId
+      );
+
+    await commitSimulationArtifact(
+      buildValidArtifactInput(
+        prepared
+      ),
+      createArtifactRpc()
+    );
+
+    await assert.rejects(
+      cancelApprovedExecutionPlan(
+        created.planId,
+        'too late'
+      ),
+      /not reusable|simulated/i
     );
   }
 );

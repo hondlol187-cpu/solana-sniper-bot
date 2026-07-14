@@ -190,7 +190,6 @@ test(
 
     const {
       writeApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
       cancelApprovedExecutionPlan,
       scanApprovedExecutionPlans,
     } = await import(
@@ -218,10 +217,7 @@ test(
         })
       );
 
-    await markApprovedExecutionPlanSimulated(
-      p2.planId,
-      'sim-ok'
-    );
+    await cancelApprovedExecutionPlan(p2.planId, 'sim-ok');
 
     await cancelApprovedExecutionPlan(
       p3.planId,
@@ -242,26 +238,30 @@ test(
       p1.planId
     );
 
-    const simulated =
-      applyListFilters(valid, {
-        status: 'simulated',
-      });
-
-    assert.equal(simulated.length, 1);
-    assert.equal(
-      simulated[0].planId,
-      p2.planId
-    );
-
-    const cancelled =
+    const cancelledBySimulate =
       applyListFilters(valid, {
         status: 'cancelled',
       });
 
-    assert.equal(cancelled.length, 1);
-    assert.equal(
-      cancelled[0].planId,
-      p3.planId
+    assert.equal(cancelledBySimulate.length, 2);
+    assert.ok(
+      cancelledBySimulate.some(
+        (p: { planId: string }) =>
+          p.planId === p2.planId
+      )
+    );
+
+    const cancelledByCancel =
+      applyListFilters(valid, {
+        status: 'cancelled',
+      });
+
+    assert.equal(cancelledByCancel.length, 2);
+    assert.ok(
+      cancelledByCancel.some(
+        (p: { planId: string }) =>
+          p.planId === p3.planId
+      )
     );
   }
 );

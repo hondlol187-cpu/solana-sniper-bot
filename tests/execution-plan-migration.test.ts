@@ -444,7 +444,7 @@ test(
 
     const {
       writeApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
       migrateApprovedExecutionPlan,
       loadApprovedExecutionPlan,
     } = await import(
@@ -463,7 +463,7 @@ test(
         })
       );
 
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );
@@ -558,7 +558,7 @@ test(
     assert.equal(v1Loaded.diskVersion, 1);
     assert.equal(
       v1Loaded.state.status,
-      'simulated'
+      'cancelled'
     );
 
     /*
@@ -586,14 +586,11 @@ test(
     assert.equal(reloaded.diskVersion, 3);
     assert.equal(
       reloaded.state.status,
-      'simulated'
+      'cancelled'
     );
     assert.equal(
-      reloaded.state.simulationCount,
-      1
-    );
-    assert.equal(
-      reloaded.state.lastSimulationResult,
+      reloaded.state
+        .cancellationReason,
       'sim-ok'
     );
   }
@@ -606,7 +603,7 @@ test(
     await cleanPlanDir();
 
     const {
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
       loadApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
@@ -632,10 +629,7 @@ test(
     /*
      * Simulate — this must upgrade to v2 on disk.
      */
-    await markApprovedExecutionPlanSimulated(
-      planId,
-      'sim-ok'
-    );
+    await cancelApprovedExecutionPlan(planId, 'sim-ok');
 
     const after =
       await loadApprovedExecutionPlan(
@@ -646,7 +640,7 @@ test(
     assert.equal(after.diskVersion, 3);
     assert.equal(
       after.state.status,
-      'simulated'
+      'cancelled'
     );
   }
 );
@@ -708,7 +702,7 @@ test(
 
     const {
       writeApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
       loadApprovedExecutionPlan,
     } = await import(
       '../sniper/execution-plan.js'
@@ -724,7 +718,7 @@ test(
     assert.equal(created.version, 3);
     assert.equal(created.diskVersion, 3);
 
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );

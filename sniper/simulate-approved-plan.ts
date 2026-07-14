@@ -263,7 +263,18 @@ async function main(): Promise<void> {
       `NewStatus: ${updatedPlan.state.status}`,
       `SimulationCount: ${updatedPlan.state.simulationCount}`,
       `ContextSlot: ${artifact.simulationResponse.contextSlot}`,
-      `CurrentSlot: ${artifact.currentSlot}`,
+      `VerifiedAtSlot: ${
+        updatedPlan.state
+          .simulationReceipt
+          ?.verifiedAtSlot ??
+        'unknown'
+      }`,
+      `VerifiedAtBlockHeight: ${
+        updatedPlan.state
+          .simulationReceipt
+          ?.verifiedAtBlockHeight ??
+        'unknown'
+      }`,
       `Result: DRY_RUN`,
       'No transaction was broadcast.',
     ].join(' | ')

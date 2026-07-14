@@ -347,7 +347,6 @@ export interface BuiltSwapSimulationArtifact {
   simulatedAt: string;
   recentBlockhash: string;
   lastValidBlockHeight: number;
-  currentSlot: number;
   simulatedSpendLamports: bigint;
 }
 
@@ -419,10 +418,8 @@ export async function simulateBuiltSwapArtifact(
     );
   }
 
-  const currentSlot =
-    await connection.getSlot(
-      'processed'
-    );
+  const currentSlot = undefined;
+  void currentSlot;
 
   return {
     serializedTransaction:
@@ -448,8 +445,6 @@ export async function simulateBuiltSwapArtifact(
     lastValidBlockHeight:
       latestBlockhash
         .lastValidBlockHeight,
-
-    currentSlot,
 
     simulatedSpendLamports:
       guard.simulatedSpendLamports,

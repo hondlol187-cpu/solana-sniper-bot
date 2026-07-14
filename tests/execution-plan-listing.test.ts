@@ -267,7 +267,7 @@ test(
 
     const {
       writeApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
       pruneApprovedExecutionPlans,
       listApprovedExecutionPlans,
     } = await import(
@@ -284,7 +284,7 @@ test(
         })
       );
 
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );
@@ -313,7 +313,7 @@ test(
     );
     assert.equal(
       remaining[0].state.status,
-      'simulated'
+      'cancelled'
     );
   }
 );
@@ -326,7 +326,7 @@ test(
 
     const {
       writeApprovedExecutionPlan,
-      markApprovedExecutionPlanSimulated,
+      cancelApprovedExecutionPlan,
       pruneApprovedExecutionPlans,
       listApprovedExecutionPlans,
     } = await import(
@@ -343,7 +343,7 @@ test(
         })
       );
 
-    await markApprovedExecutionPlanSimulated(
+    await cancelApprovedExecutionPlan(
       created.planId,
       'sim-ok'
     );
@@ -376,7 +376,7 @@ test(
     );
     assert.equal(
       results[0].previousStatus,
-      'simulated'
+      'cancelled'
     );
 
     const remaining =

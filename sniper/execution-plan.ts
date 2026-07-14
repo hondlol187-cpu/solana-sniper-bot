@@ -665,174 +665,6 @@ export async function deleteApprovedExecutionPlan(
   );
 }
 
-export async function markApprovedExecutionPlanSimulated(
-  planId: string,
-  result: string
-): Promise<ApprovedExecutionPlanFile> {
-  /*
-   * Atomic load + check + write under a per-plan lock so two
-   * concurrent simulate processes cannot both pass the
-   * `status === 'prepared'` gate and double-mark the plan.
-   */
-  return withFileLock(
-    getApprovedExecutionPlanLockTarget(planId),
-    async () => {
-      const file =
-        await loadApprovedExecutionPlan(
-          planId
-        );
-
-      if (file.state.status !== 'prepared') {
-        throw new Error(
-          `Approved execution plan is not reusable; current status is ${file.state.status}`
-        );
-      }
-
-      return saveApprovedExecutionPlanFile({
-        planId: file.planId,
-        planInstanceId:
-          file.planInstanceId,
-        state: {
-          ...file.state,
-          status: 'simulated',
-          simulationCount:
-            file.state.simulationCount + 1,
-          simulatedAt:
-            new Date().toISOString(),
-          lastSimulationResult: result,
-        },
-        payload: file.payload,
-      });
-    }
-  );
-}
-
-/**
- * Two-phase simulation receipt commit.
- *
- * Phase 1 (caller, outside lock):
- *   - Load the prepared plan
- *   - Capture its SHA-256
- *   - Build + simulate the transaction
- *   - Construct the SimulationReceipt
- *
- * Phase 2 (this function, under lock):
- *   - Reload the plan
- *   - Verify status is still 'prepared'
- *   - Verify current SHA-256 === captured SHA-256
- *   - Save the receipt and transition to 'simulated'
- *
- * This prevents a long RPC request from blocking cancellation
- * while still preventing stale simulation results from being
- * committed.
- *
- * Fail-closed rules enforced here:
- *   - status must be 'prepared' (not already simulated/cancelled)
- *   - current SHA-256 must match the captured pre-simulation SHA-256
- *   - receipt.err must be null (simulation succeeded)
- *   - receipt.walletPublicKey must match the plan's wallet
- *   - receipt.expectedCluster must match the plan's cluster
- */
-export async function commitSimulationReceipt(
-  planId: string,
-  receipt: SimulationReceipt
-): Promise<ApprovedExecutionPlanFile> {
-  return withFileLock(
-    getApprovedExecutionPlanLockTarget(planId),
-    async () => {
-      const file =
-        await loadApprovedExecutionPlan(
-          planId
-        );
-
-      if (file.state.status !== 'prepared') {
-        throw new Error(
-          `Approved execution plan is not reusable; current status is ${file.state.status}`
-        );
-      }
-
-      if (file.sha256 !== receipt.planSha256BeforeSimulation) {
-        throw new Error(
-          'Approved execution plan changed between simulation and commit'
-        );
-      }
-
-      if (receipt.err !== null) {
-        throw new Error(
-          'Simulation returned an error — refusing to commit receipt'
-        );
-      }
-
-      /*
-       * Verify the receipt's simulatedAt is not stale
-       * or in the future. This prevents an old receipt
-       * from being committed long after the simulation.
-       */
-      const simulatedAtMs = Date.parse(
-        receipt.simulatedAt
-      );
-
-      if (!Number.isFinite(simulatedAtMs)) {
-        throw new Error(
-          'Receipt simulatedAt is invalid'
-        );
-      }
-
-      const nowMs = Date.now();
-
-      if (simulatedAtMs > nowMs) {
-        throw new Error(
-          'Receipt simulatedAt is in the future'
-        );
-      }
-
-      const maxAgeMs =
-        config.maxApprovedExecutionPlanAgeSeconds *
-        1_000;
-
-      if (nowMs - simulatedAtMs > maxAgeMs) {
-        throw new Error(
-          'Receipt simulatedAt is too old'
-        );
-      }
-
-      if (
-        receipt.walletPublicKey !==
-        file.payload.walletPublicKey
-      ) {
-        throw new Error(
-          'Receipt wallet does not match plan wallet'
-        );
-      }
-
-      if (
-        receipt.expectedCluster !==
-        file.payload.expectedCluster
-      ) {
-        throw new Error(
-          'Receipt cluster does not match plan cluster'
-        );
-      }
-
-      return saveApprovedExecutionPlanFile({
-        planId: file.planId,
-        planInstanceId:
-          file.planInstanceId,
-        state: {
-          ...file.state,
-          status: 'simulated',
-          simulationCount:
-            file.state.simulationCount + 1,
-          simulatedAt:
-            receipt.simulatedAt,
-          lastSimulationResult: 'DRY_RUN',
-          simulationReceipt: receipt,
-        },
-        payload: file.payload,
-      });
-    }
-  );
-}
 
 /**
  * Input for the trusted simulation artifact commit.
@@ -1115,31 +947,28 @@ async function resolveTransactionAccounts(
 /**
  * Trusted simulation artifact commit.
  *
- * Replaces the caller-supplied receipt path. The caller
- * provides raw transaction bytes and the raw simulation
- * response — this function:
+ * The caller supplies the exact serialized transaction bytes
+ * and raw simulation response. This function:
  *
- *   1. Deserializes the transaction.
- *   2. Recomputes serializedTransactionSha256 and
- *      transactionMessageSha256.
- *   3. Recomputes logsSha256 and returnDataSha256.
- *   4. Verifies the fee payer equals the plan wallet.
- *   5. Verifies the input amount equals the plan's
- *      buyLamports (for SOL input).
- *   6. Verifies route AMM keys match the plan's
- *      routeAmmKeys (resolving address lookup tables).
- *   7. Rejects unexpected signers and writable accounts.
- *   8. Verifies simulation err is null.
- *   9. Verifies blockhash validity and slot freshness
- *      against live RPC state.
- *  10. Verifies wallet and cluster match the plan.
- *  11. Constructs the receipt internally.
- *  12. Reacquires the plan lock and commits only if
- *      the plan SHA is unchanged.
+ * 1. Deserializes the exact transaction bytes.
+ * 2. Recomputes the serialized transaction and message hashes.
+ * 3. Recomputes simulation logs and return-data hashes.
+ * 4. Verifies the transaction fee payer matches the plan wallet.
+ * 5. Rejects unexpected required signers.
+ * 6. Resolves v0 address lookup tables through the trusted RPC.
+ * 7. Verifies all approved route AMM keys occur in the complete
+ *    resolved transaction account-key set.
+ * 8. Verifies the simulation completed without an error.
+ * 9. Verifies blockhash validity, block height, slot lag, and
+ *    simulation-receipt age.
+ * 10. Constructs the SimulationReceipt internally.
+ * 11. Reacquires the plan lock and commits only when the plan is
+ *     still prepared and its SHA-256 is unchanged.
  *
- * This prevents a compromised caller from supplying
- * pre-fabricated hashes or a receipt that doesn't
- * match the actual transaction bytes.
+ * Maximum SOL outflow is enforced earlier by
+ * simulateWithSpendGuard(). This function does not attempt to
+ * decode arbitrary Jupiter instruction data or claim to enforce
+ * a writable-account allowlist.
  */
 export async function commitSimulationArtifact(
   input: SimulationArtifactInput,
