@@ -62,6 +62,12 @@ function enumEnv<T extends string>(
 
 const liveTrading = booleanEnv('LIVE_TRADING', false);
 
+const enableMainnetExecution =
+  booleanEnv(
+    'ENABLE_MAINNET_EXECUTION',
+    false
+  );
+
 const allowEnvironmentPrivateKey =
   booleanEnv(
     'ALLOW_ENV_PRIVATE_KEY',
@@ -505,6 +511,24 @@ export const config = {
     1,
     200
   ),
+
+  enableMainnetExecution,
+
+  maxLiveExecutionLamports:
+    numberEnv(
+      'MAX_LIVE_EXECUTION_LAMPORTS',
+      10_000_000,
+      100_000,
+      100_000_000
+    ),
+
+  maxLiveExecutionReceiptAgeSeconds:
+    numberEnv(
+      'MAX_LIVE_EXECUTION_RECEIPT_AGE_SECONDS',
+      10,
+      1,
+      30
+    ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

@@ -85,8 +85,28 @@ async function main():
     );
   }
 
+  if (
+    configModule
+      .config
+      .expectedCluster ===
+      'mainnet-beta' &&
+    process.env
+      .ENABLE_MAINNET_EXECUTION !==
+      'true'
+  ) {
+    throw new Error(
+      'ENABLE_MAINNET_EXECUTION=true is required for mainnet'
+    );
+  }
+
   const expectedConfirmation =
-    `CONFIRM:${planId}:${receipt.artifactId}`;
+    [
+      'CONFIRM',
+      planId,
+      receipt.artifactId,
+      plan.payload.buyLamports,
+      plan.payload.exactMint,
+    ].join(':');
 
   if (
     confirmation !==

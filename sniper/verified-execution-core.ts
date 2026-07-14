@@ -72,6 +72,19 @@ export async function executeVerifiedPlan(
     );
   }
 
+  if (
+    config.expectedCluster ===
+      'mainnet-beta' &&
+    !config.enableMainnetExecution
+  ) {
+    throw new Error(
+      [
+        'Mainnet execution is disabled.',
+        'Set ENABLE_MAINNET_EXECUTION=true only after reviewing the exact plan and artifact.',
+      ].join(' ')
+    );
+  }
+
   const plan =
     await loadApprovedExecutionPlan(
       planId
@@ -83,6 +96,42 @@ export async function executeVerifiedPlan(
   ) {
     throw new Error(
       `Plan is not ready for execution; status is ${plan.state.status}`
+    );
+  }
+
+  let buyLamports: bigint;
+
+  try {
+    buyLamports =
+      BigInt(
+        plan.payload.buyLamports
+      );
+  } catch {
+    throw new Error(
+      'Plan buyLamports is invalid'
+    );
+  }
+
+  if (
+    buyLamports <= 0n
+  ) {
+    throw new Error(
+      'Plan buy amount must be positive'
+    );
+  }
+
+  if (
+    buyLamports >
+    BigInt(
+      config
+        .maxLiveExecutionLamports
+    )
+  ) {
+    throw new Error(
+      [
+        `Plan buy amount ${buyLamports.toString()} exceeds`,
+        `MAX_LIVE_EXECUTION_LAMPORTS=${config.maxLiveExecutionLamports}.`,
+      ].join(' ')
     );
   }
 
@@ -146,7 +195,7 @@ export async function executeVerifiedPlan(
     Date.now() -
       simulatedAtMs >
       config
-        .maxSimulationReceiptAgeSeconds *
+        .maxLiveExecutionReceiptAgeSeconds *
       1_000
   ) {
     throw new Error(
@@ -242,10 +291,25 @@ export async function executeVerifiedPlan(
       )
     );
 
-  const buyLamports =
+  const requiredBalance =
+    buyLamports +
     BigInt(
-      plan.payload.buyLamports
+      config
+        .minimumFeeReserveLamports
     );
+
+  if (
+    currentBalance <
+    requiredBalance
+  ) {
+    throw new Error(
+      [
+        'Wallet balance is insufficient for verified execution.',
+        `Balance: ${currentBalance.toString()}.`,
+        `Required: ${requiredBalance.toString()}.`,
+      ].join(' ')
+    );
+  }
 
   await reserveTradeOnce(
     riskReservationId,

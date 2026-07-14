@@ -378,10 +378,11 @@ test(
       [
         plan.planId,
         '--live',
-        'CONFIRM:wrong:wrong',
+        'CONFIRM:wrong:wrong:wrong:wrong',
       ],
       {
         LIVE_TRADING: 'true',
+        ENABLE_MAINNET_EXECUTION: 'true',
         PRIVATE_KEY_FILE: keyFilePath,
         WALLET_PUBLIC_KEY: keyFileWallet,
       }
@@ -444,10 +445,11 @@ test(
       [
         plan.planId,
         '--live',
-        `CONFIRM:${plan.planId}:anything`,
+        `CONFIRM:${plan.planId}:anything:10000000:BASE_1`,
       ],
       {
         LIVE_TRADING: 'true',
+        ENABLE_MAINNET_EXECUTION: 'true',
         PRIVATE_KEY_FILE: keyFilePath,
         WALLET_PUBLIC_KEY: keyFileWallet,
       }
@@ -573,10 +575,11 @@ test(
       [
         plan.planId,
         '--live',
-        `CONFIRM:${plan.planId}:${ARTIFACT_ID}`,
+        `CONFIRM:${plan.planId}:${ARTIFACT_ID}:10000000:BASE_1`,
       ],
       {
         LIVE_TRADING: 'true',
+        ENABLE_MAINNET_EXECUTION: 'true',
         PRIVATE_KEY_FILE: keyFilePath,
         WALLET_PUBLIC_KEY: keyFileWallet,
       }
