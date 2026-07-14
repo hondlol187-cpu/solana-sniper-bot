@@ -123,10 +123,13 @@ export async function reconcileExecution(
   }
 
   if (
-    journal.status !== 'submitted'
+    journal.status !==
+      'broadcasting' &&
+    journal.status !==
+      'submitted'
   ) {
     throw new Error(
-      `Execution ${executionId} has not been submitted; current status is ${journal.status}`
+      `Execution has not reached broadcast state; current status is ${journal.status}`
     );
   }
 

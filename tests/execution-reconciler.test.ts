@@ -48,6 +48,10 @@ const PLAN_ID = 'test-plan-id';
 const PLAN_INSTANCE_ID = 'test-instance-id';
 const ARTIFACT_ID = 'test-artifact-id';
 
+const SIGNED_TX_SHA = 'a'.repeat(64);
+const MSG_SHA = 'b'.repeat(64);
+const LAST_VALID_BLOCK_HEIGHT = 200_000_000;
+
 function createFakeRpc(
   status: ExecutionSignatureStatus | null
 ): ExecutionStatusRpc {
@@ -72,6 +76,7 @@ async function createSubmittedJournal() {
   const {
     beginExecution,
     markExecutionSigning,
+    markExecutionBroadcastReady,
     markExecutionSubmitted,
   } = await import('../sniper/execution-journal.js');
 
@@ -83,12 +88,50 @@ async function createSubmittedJournal() {
 
   await markExecutionSigning(journal.executionId);
 
+  await markExecutionBroadcastReady(
+    journal.executionId,
+    {
+      transactionSignature: 'test-signature-123',
+      signedTransactionSha256: SIGNED_TX_SHA,
+      transactionMessageSha256: MSG_SHA,
+      lastValidBlockHeight: LAST_VALID_BLOCK_HEIGHT,
+    }
+  );
+
   const submitted = await markExecutionSubmitted(
     journal.executionId,
     'test-signature-123'
   );
 
   return submitted;
+}
+
+async function createBroadcastingJournal() {
+  const {
+    beginExecution,
+    markExecutionSigning,
+    markExecutionBroadcastReady,
+  } = await import('../sniper/execution-journal.js');
+
+  const journal = await beginExecution(
+    PLAN_ID,
+    PLAN_INSTANCE_ID,
+    ARTIFACT_ID
+  );
+
+  await markExecutionSigning(journal.executionId);
+
+  const broadcasting = await markExecutionBroadcastReady(
+    journal.executionId,
+    {
+      transactionSignature: 'test-signature-123',
+      signedTransactionSha256: SIGNED_TX_SHA,
+      transactionMessageSha256: MSG_SHA,
+      lastValidBlockHeight: LAST_VALID_BLOCK_HEIGHT,
+    }
+  );
+
+  return broadcasting;
 }
 
 test(
@@ -397,5 +440,77 @@ test(
 
     assert.ok(final);
     assert.equal(final.status, 'confirmed');
+  }
+);
+
+test(
+  'broadcasting execution can be reconciled to confirmed',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const journal = await createBroadcastingJournal();
+
+    const { reconcileExecution } = await import(
+      '../sniper/execution-reconciler.js'
+    );
+
+    const result = await reconcileExecution(
+      journal.executionId,
+      createFakeRpc({
+        confirmationStatus: 'confirmed',
+        err: null,
+      })
+    );
+
+    assert.equal(result.action, 'confirmed');
+    assert.equal(result.journal.status, 'confirmed');
+  }
+);
+
+test(
+  'broadcasting execution can be reconciled to failed',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const journal = await createBroadcastingJournal();
+
+    const { reconcileExecution } = await import(
+      '../sniper/execution-reconciler.js'
+    );
+
+    const result = await reconcileExecution(
+      journal.executionId,
+      createFakeRpc({
+        confirmationStatus: null,
+        err: { InstructionError: [0, 'Custom'] },
+      })
+    );
+
+    assert.equal(result.action, 'failed');
+    assert.equal(result.journal.status, 'failed');
+  }
+);
+
+test(
+  'broadcasting execution with null RPC status stays broadcasting',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const journal = await createBroadcastingJournal();
+
+    const { reconcileExecution } = await import(
+      '../sniper/execution-reconciler.js'
+    );
+
+    const result = await reconcileExecution(
+      journal.executionId,
+      createFakeRpc(null)
+    );
+
+    assert.equal(result.action, 'none');
+    assert.equal(result.journal.status, 'broadcasting');
   }
 );

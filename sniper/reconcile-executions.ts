@@ -42,7 +42,12 @@ async function main(): Promise<void> {
   }> = [];
 
   for (const journal of journals) {
-    if (journal.status !== 'submitted') {
+    if (
+      journal.status !==
+        'broadcasting' &&
+      journal.status !==
+        'submitted'
+    ) {
       continue;
     }
 
@@ -97,7 +102,7 @@ async function main(): Promise<void> {
     }
 
     if (results.length === 0) {
-      console.log('No submitted executions require reconciliation.');
+      console.log('No broadcasting or submitted executions require reconciliation.');
     }
   }
 

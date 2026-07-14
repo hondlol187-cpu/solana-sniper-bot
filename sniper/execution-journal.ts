@@ -29,6 +29,7 @@ import {
 export type ExecutionStatus =
   | 'ready'
   | 'signing'
+  | 'broadcasting'
   | 'submitted'
   | 'confirmed'
   | 'failed';
@@ -47,6 +48,11 @@ export interface ExecutionJournal {
   updatedAt: string;
 
   transactionSignature?: string;
+  signedTransactionSha256?: string;
+  transactionMessageSha256?: string;
+  lastValidBlockHeight?: number;
+  broadcastPreparedAt?: string;
+
   submittedAt?: string;
   confirmedAt?: string;
   failedAt?: string;
@@ -185,6 +191,7 @@ function validateJournal(
   const validStatuses = new Set<ExecutionStatus>([
     'ready',
     'signing',
+    'broadcasting',
     'submitted',
     'confirmed',
     'failed',
@@ -209,15 +216,79 @@ function validateJournal(
   }
 
   if (
-    journal.status === 'submitted' ||
-    journal.status === 'confirmed'
+    journal.status ===
+      'broadcasting' ||
+    journal.status ===
+      'submitted' ||
+    journal.status ===
+      'confirmed'
   ) {
-    if (!journal.transactionSignature?.trim()) {
+    if (
+      !journal
+        .transactionSignature
+        ?.trim()
+    ) {
       throw new Error(
         `${journal.status} execution has no transaction signature`
       );
     }
 
+    if (
+      !/^[0-9a-f]{64}$/.test(
+        journal
+          .signedTransactionSha256 ??
+        ''
+      )
+    ) {
+      throw new Error(
+        `${journal.status} execution has invalid signed transaction hash`
+      );
+    }
+
+    if (
+      !/^[0-9a-f]{64}$/.test(
+        journal
+          .transactionMessageSha256 ??
+        ''
+      )
+    ) {
+      throw new Error(
+        `${journal.status} execution has invalid message hash`
+      );
+    }
+
+    if (
+      !Number.isSafeInteger(
+        journal.lastValidBlockHeight
+      ) ||
+      (
+        journal.lastValidBlockHeight ??
+        -1
+      ) < 0
+    ) {
+      throw new Error(
+        `${journal.status} execution has invalid lastValidBlockHeight`
+      );
+    }
+
+    if (
+      !journal.broadcastPreparedAt
+    ) {
+      throw new Error(
+        `${journal.status} execution has no broadcastPreparedAt`
+      );
+    }
+
+    assertIsoTimestamp(
+      journal.broadcastPreparedAt,
+      'Execution broadcastPreparedAt'
+    );
+  }
+
+  if (
+    journal.status === 'submitted' ||
+    journal.status === 'confirmed'
+  ) {
     if (!journal.submittedAt) {
       throw new Error(
         `${journal.status} execution has no submittedAt`
@@ -426,6 +497,7 @@ export async function beginExecution(
         }
 
         if (
+          existing.status === 'broadcasting' ||
           existing.status === 'submitted' ||
           existing.status === 'confirmed'
         ) {
@@ -508,13 +580,59 @@ export function markExecutionSigning(
   );
 }
 
-export function markExecutionSubmitted(
+export interface BroadcastEvidence {
+  transactionSignature: string;
+  signedTransactionSha256: string;
+  transactionMessageSha256: string;
+  lastValidBlockHeight: number;
+}
+
+export function markExecutionBroadcastReady(
   executionId: string,
-  transactionSignature: string
+  evidence: BroadcastEvidence
 ) {
-  if (!transactionSignature.trim()) {
+  if (
+    !evidence
+      .transactionSignature
+      .trim()
+  ) {
     throw new Error(
-      'Transaction signature is required'
+      'Deterministic transaction signature is required'
+    );
+  }
+
+  if (
+    !/^[0-9a-f]{64}$/.test(
+      evidence
+        .signedTransactionSha256
+    )
+  ) {
+    throw new Error(
+      'Signed transaction SHA-256 is invalid'
+    );
+  }
+
+  if (
+    !/^[0-9a-f]{64}$/.test(
+      evidence
+        .transactionMessageSha256
+    )
+  ) {
+    throw new Error(
+      'Transaction message SHA-256 is invalid'
+    );
+  }
+
+  if (
+    !Number.isSafeInteger(
+      evidence
+        .lastValidBlockHeight
+    ) ||
+    evidence
+      .lastValidBlockHeight < 0
+  ) {
+    throw new Error(
+      'Last valid block height is invalid'
     );
   }
 
@@ -522,13 +640,79 @@ export function markExecutionSubmitted(
     executionId,
     ['signing'],
     (current) => {
-      const { journalSha256: _, ...withoutHash } = current;
-      const now = new Date().toISOString();
+      const {
+        journalSha256: _,
+        ...withoutHash
+      } = current;
+
+      const now =
+        new Date().toISOString();
+
+      return {
+        ...withoutHash,
+        status: 'broadcasting',
+
+        transactionSignature:
+          evidence
+            .transactionSignature,
+
+        signedTransactionSha256:
+          evidence
+            .signedTransactionSha256,
+
+        transactionMessageSha256:
+          evidence
+            .transactionMessageSha256,
+
+        lastValidBlockHeight:
+          evidence
+            .lastValidBlockHeight,
+
+        broadcastPreparedAt: now,
+        updatedAt: now,
+      };
+    }
+  );
+}
+
+export function markExecutionSubmitted(
+  executionId: string,
+  transactionSignature: string
+) {
+  if (
+    !transactionSignature
+      .trim()
+  ) {
+    throw new Error(
+      'Transaction signature is required'
+    );
+  }
+
+  return transitionExecution(
+    executionId,
+    ['broadcasting'],
+    (current) => {
+      if (
+        current
+          .transactionSignature !==
+        transactionSignature
+      ) {
+        throw new Error(
+          'RPC signature does not match pre-broadcast signature'
+        );
+      }
+
+      const {
+        journalSha256: _,
+        ...withoutHash
+      } = current;
+
+      const now =
+        new Date().toISOString();
 
       return {
         ...withoutHash,
         status: 'submitted',
-        transactionSignature,
         submittedAt: now,
         updatedAt: now,
       };
@@ -541,14 +725,28 @@ export function markExecutionConfirmed(
 ) {
   return transitionExecution(
     executionId,
-    ['submitted'],
+    [
+      'broadcasting',
+      'submitted',
+    ],
     (current) => {
-      const { journalSha256: _, ...withoutHash } = current;
-      const now = new Date().toISOString();
+      const {
+        journalSha256: _,
+        ...withoutHash
+      } = current;
+
+      const now =
+        new Date().toISOString();
 
       return {
         ...withoutHash,
         status: 'confirmed',
+
+        submittedAt:
+          current.submittedAt ??
+          current.broadcastPreparedAt ??
+          now,
+
         confirmedAt: now,
         updatedAt: now,
       };
@@ -600,7 +798,10 @@ export function markSubmittedExecutionFailed(
 
   return transitionExecution(
     executionId,
-    ['submitted'],
+    [
+      'broadcasting',
+      'submitted',
+    ],
     (current) => {
       const { journalSha256: _, ...withoutHash } = current;
       const now = new Date().toISOString();

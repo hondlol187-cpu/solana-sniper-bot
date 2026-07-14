@@ -58,6 +58,26 @@ const PLAN_ID = 'test-plan-id';
 const PLAN_INSTANCE_ID = 'test-instance-id';
 const ARTIFACT_ID = 'test-artifact-id';
 
+const SIGNED_TX_SHA =
+  'a'.repeat(64);
+const MSG_SHA =
+  'b'.repeat(64);
+const LAST_VALID_BLOCK_HEIGHT = 200_000_000;
+
+function makeBroadcastEvidence(
+  signature: string
+) {
+  return {
+    transactionSignature: signature,
+    signedTransactionSha256:
+      SIGNED_TX_SHA,
+    transactionMessageSha256:
+      MSG_SHA,
+    lastValidBlockHeight:
+      LAST_VALID_BLOCK_HEIGHT,
+  };
+}
+
 test(
   'deterministic execution ID',
   async () => {
@@ -124,7 +144,7 @@ test(
 );
 
 test(
-  'only ready -> signing -> submitted -> confirmed',
+  'only ready -> signing -> broadcasting -> submitted -> confirmed',
   async () => {
     await configureEnvironment();
     await cleanAll();
@@ -132,6 +152,7 @@ test(
     const {
       beginExecution,
       markExecutionSigning,
+      markExecutionBroadcastReady,
       markExecutionSubmitted,
       markExecutionConfirmed,
     } = await import(
@@ -152,6 +173,24 @@ test(
     assert.equal(
       signing.status,
       'signing'
+    );
+
+    const broadcasting =
+      await markExecutionBroadcastReady(
+        journal.executionId,
+        makeBroadcastEvidence(
+          'test-signature'
+        )
+      );
+
+    assert.equal(
+      broadcasting.status,
+      'broadcasting'
+    );
+
+    assert.equal(
+      broadcasting.transactionSignature,
+      'test-signature'
     );
 
     const submitted =
@@ -190,6 +229,7 @@ test(
     const {
       beginExecution,
       markExecutionSigning,
+      markExecutionBroadcastReady,
       markExecutionSubmitted,
     } = await import(
       '../sniper/execution-journal.js'
@@ -205,9 +245,58 @@ test(
       journal.executionId
     );
 
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'test-signature'
+      )
+    );
+
     await markExecutionSubmitted(
       journal.executionId,
       'test-signature'
+    );
+
+    await assert.rejects(
+      beginExecution(
+        PLAN_ID,
+        PLAN_INSTANCE_ID,
+        ARTIFACT_ID
+      ),
+      /already reached/i
+    );
+  }
+);
+
+test(
+  'broadcasting execution cannot begin again',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      markExecutionSigning,
+      markExecutionBroadcastReady,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    const journal = await beginExecution(
+      PLAN_ID,
+      PLAN_INSTANCE_ID,
+      ARTIFACT_ID
+    );
+
+    await markExecutionSigning(
+      journal.executionId
+    );
+
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'test-signature'
+      )
     );
 
     await assert.rejects(
@@ -230,6 +319,7 @@ test(
     const {
       beginExecution,
       markExecutionSigning,
+      markExecutionBroadcastReady,
       markExecutionSubmitted,
       markExecutionConfirmed,
     } = await import(
@@ -244,6 +334,13 @@ test(
 
     await markExecutionSigning(
       journal.executionId
+    );
+
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'test-signature'
+      )
     );
 
     await markExecutionSubmitted(
@@ -303,7 +400,7 @@ test(
 );
 
 test(
-  'failure forbidden after submission',
+  'failure forbidden after broadcasting',
   async () => {
     await configureEnvironment();
     await cleanAll();
@@ -311,7 +408,7 @@ test(
     const {
       beginExecution,
       markExecutionSigning,
-      markExecutionSubmitted,
+      markExecutionBroadcastReady,
       markExecutionFailed,
     } = await import(
       '../sniper/execution-journal.js'
@@ -327,9 +424,11 @@ test(
       journal.executionId
     );
 
-    await markExecutionSubmitted(
+    await markExecutionBroadcastReady(
       journal.executionId,
-      'test-signature'
+      makeBroadcastEvidence(
+        'test-signature'
+      )
     );
 
     await assert.rejects(
@@ -351,6 +450,7 @@ test(
     const {
       beginExecution,
       markExecutionSigning,
+      markExecutionBroadcastReady,
       markExecutionSubmitted,
     } = await import(
       '../sniper/execution-journal.js'
@@ -366,15 +466,22 @@ test(
       journal.executionId
     );
 
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'shared-sig'
+      )
+    );
+
     const results =
       await Promise.allSettled([
         markExecutionSubmitted(
           journal.executionId,
-          'sig-a'
+          'shared-sig'
         ),
         markExecutionSubmitted(
           journal.executionId,
-          'sig-b'
+          'shared-sig'
         ),
       ]);
 
@@ -386,6 +493,109 @@ test(
       fulfilled.length,
       1,
       'exactly one submit must succeed'
+    );
+  }
+);
+
+test(
+  'markExecutionSubmitted rejects mismatched RPC signature',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      markExecutionSigning,
+      markExecutionBroadcastReady,
+      markExecutionSubmitted,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    const journal = await beginExecution(
+      PLAN_ID,
+      PLAN_INSTANCE_ID,
+      ARTIFACT_ID
+    );
+
+    await markExecutionSigning(
+      journal.executionId
+    );
+
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'deterministic-sig'
+      )
+    );
+
+    await assert.rejects(
+      markExecutionSubmitted(
+        journal.executionId,
+        'different-rpc-sig'
+      ),
+      /RPC signature does not match pre-broadcast signature/i
+    );
+  }
+);
+
+test(
+  'broadcasting state can be reconciled to confirmed',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      markExecutionSigning,
+      markExecutionBroadcastReady,
+      markExecutionConfirmed,
+      loadExecutionJournal,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    const journal = await beginExecution(
+      PLAN_ID,
+      PLAN_INSTANCE_ID,
+      ARTIFACT_ID
+    );
+
+    await markExecutionSigning(
+      journal.executionId
+    );
+
+    await markExecutionBroadcastReady(
+      journal.executionId,
+      makeBroadcastEvidence(
+        'reconciled-sig'
+      )
+    );
+
+    const confirmed =
+      await markExecutionConfirmed(
+        journal.executionId
+      );
+
+    assert.equal(
+      confirmed.status,
+      'confirmed'
+    );
+
+    assert.ok(
+      confirmed.submittedAt,
+      'confirmed execution should fall back to broadcastPreparedAt'
+    );
+
+    const reloaded =
+      await loadExecutionJournal(
+        journal.executionId
+      );
+
+    assert.ok(reloaded);
+    assert.equal(
+      reloaded.status,
+      'confirmed'
     );
   }
 );
