@@ -817,6 +817,94 @@ export function markSubmittedExecutionFailed(
   );
 }
 
+export function failStaleSigningExecution(
+  executionId: string,
+  minimumAgeMs: number,
+  nowMs: number = Date.now()
+) {
+  if (
+    !Number.isSafeInteger(
+      minimumAgeMs
+    ) ||
+    minimumAgeMs < 1_000
+  ) {
+    throw new Error(
+      'Minimum signing age is invalid'
+    );
+  }
+
+  if (
+    !Number.isSafeInteger(
+      nowMs
+    ) ||
+    nowMs < 0
+  ) {
+    throw new Error(
+      'Current time is invalid'
+    );
+  }
+
+  return transitionExecution(
+    executionId,
+    ['signing'],
+    (current) => {
+      const updatedAtMs =
+        Date.parse(
+          current.updatedAt
+        );
+
+      if (
+        !Number.isFinite(
+          updatedAtMs
+        )
+      ) {
+        throw new Error(
+          'Signing journal updatedAt is invalid'
+        );
+      }
+
+      const ageMs =
+        nowMs -
+        updatedAtMs;
+
+      if (
+        ageMs <
+        minimumAgeMs
+      ) {
+        throw new Error(
+          `Signing execution is not stale; age is ${ageMs}ms`
+        );
+      }
+
+      const {
+        journalSha256: _,
+        ...withoutHash
+      } = current;
+
+      const now =
+        new Date(
+          nowMs
+        ).toISOString();
+
+      return {
+        ...withoutHash,
+
+        status: 'failed',
+
+        failedAt: now,
+
+        failureReason:
+          [
+            'Execution abandoned before pre-broadcast evidence was recorded.',
+            `Signing state age: ${ageMs}ms.`,
+          ].join(' '),
+
+        updatedAt: now,
+      };
+    }
+  );
+}
+
 export async function listExecutionJournals(): Promise<ExecutionJournal[]> {
   let entries: string[];
 
