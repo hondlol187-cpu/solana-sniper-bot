@@ -33,6 +33,7 @@
     "sniper:verify-simulation-artifact": "tsx sniper/verify-simulation-artifact.ts",
     "sniper:reconcile-executions": "tsx sniper/reconcile-executions.ts",
     "sniper:recover-plan-deletions": "tsx sniper/recover-plan-deletions.ts",
+    "sniper:doctor-executions": "tsx sniper/doctor-executions.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {
