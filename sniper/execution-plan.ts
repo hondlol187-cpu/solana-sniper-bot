@@ -136,6 +136,9 @@ export interface SimulationReceipt {
   transactionPolicyOk?: boolean;
   transactionPolicySha256?: string;
 
+  artifactId?: string;
+  artifactSha256?: string;
+
   walletPublicKey: string;
   expectedCluster: string;
   planSha256BeforeSimulation: string;
@@ -1397,6 +1400,44 @@ export async function commitSimulationArtifact(
   }
 
   /*
+   * Persist the exact simulation artifact atomically.
+   * The artifact contains the serialized transaction
+   * bytes and the raw simulation response, hashed for
+   * tamper evidence. The receipt references the
+   * artifact by ID + hash so the live signing path
+   * can load the exact verified bytes.
+   */
+  const {
+    persistSimulationArtifact,
+  } = await import(
+    './simulation-artifact-store.js'
+  );
+
+  const storedArtifact =
+    await persistSimulationArtifact({
+      planId:
+        planFile.planId,
+
+      planInstanceId:
+        planFile.planInstanceId,
+
+      planSha256BeforeSimulation:
+        input
+          .planSha256BeforeSimulation,
+
+      serializedTransaction:
+        input
+          .serializedTransaction,
+
+      simulationResponse:
+        input
+          .simulationResponse,
+
+      createdAt:
+        input.simulatedAt,
+    });
+
+  /*
    * Construct the receipt internally.
    */
   const receipt: SimulationReceipt = {
@@ -1453,6 +1494,12 @@ export async function commitSimulationArtifact(
 
     transactionPolicySha256:
       policyValidation.sha256,
+
+    artifactId:
+      storedArtifact.artifactId,
+
+    artifactSha256:
+      storedArtifact.artifactSha256,
 
     walletPublicKey:
       expectedWallet,
