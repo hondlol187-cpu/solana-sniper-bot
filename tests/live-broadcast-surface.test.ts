@@ -131,3 +131,53 @@ test(
     );
   }
 );
+
+test(
+  'live execution CLI requires exact plan and artifact confirmation',
+  async () => {
+    const source =
+      await readFile(
+        join(
+          process.cwd(),
+          'sniper',
+          'execute-simulated-plan.ts'
+        ),
+        'utf8'
+      );
+
+    assert.match(
+      source,
+      /CONFIRM:/
+    );
+
+    assert.match(
+      source,
+      /receipt\.artifactId/
+    );
+
+    assert.match(
+      source,
+      /LIVE_TRADING/
+    );
+
+    assert.match(
+      source,
+      /config[\s\S]*keypair/
+    );
+
+    assert.match(
+      source,
+      /executeVerifiedPlan/
+    );
+
+    assert.doesNotMatch(
+      source,
+      /sendRawTransaction/
+    );
+
+    assert.doesNotMatch(
+      source,
+      /PRIVATE_KEY[^_F]/
+    );
+  }
+);
