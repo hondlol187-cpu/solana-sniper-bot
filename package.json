@@ -31,6 +31,7 @@
     "sniper:history-approved-plans": "tsx sniper/history-approved-plans.ts",
     "sniper:verify-plan-history": "tsx sniper/verify-plan-history.ts",
     "sniper:verify-simulation-artifact": "tsx sniper/verify-simulation-artifact.ts",
+    "sniper:reconcile-executions": "tsx sniper/reconcile-executions.ts",
     "sniper:recover-plan-deletions": "tsx sniper/recover-plan-deletions.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },

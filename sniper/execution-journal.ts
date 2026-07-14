@@ -586,6 +586,36 @@ export function markExecutionFailed(
   );
 }
 
+export function markSubmittedExecutionFailed(
+  executionId: string,
+  failureReason: string
+) {
+  const reason = failureReason.trim();
+
+  if (!reason) {
+    throw new Error(
+      'Execution failure reason is required'
+    );
+  }
+
+  return transitionExecution(
+    executionId,
+    ['submitted'],
+    (current) => {
+      const { journalSha256: _, ...withoutHash } = current;
+      const now = new Date().toISOString();
+
+      return {
+        ...withoutHash,
+        status: 'failed',
+        failedAt: now,
+        failureReason: reason.slice(0, 500),
+        updatedAt: now,
+      };
+    }
+  );
+}
+
 export async function listExecutionJournals(): Promise<ExecutionJournal[]> {
   let entries: string[];
 
