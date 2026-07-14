@@ -158,7 +158,6 @@ async function writePlan(
     }
 
     const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
       .sort(([a], [b]) => a.localeCompare(b));
 
     return `{${entries

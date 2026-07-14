@@ -139,7 +139,6 @@ async function writePlan(
       return `[${value.map(stableStringify).join(',')}]`;
     }
     const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
       .sort(([a], [b]) => a.localeCompare(b));
     return `{${entries
       .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
@@ -622,7 +621,6 @@ test(
         return `[${value.map(stableStringify).join(',')}]`;
       }
       const entries = Object.entries(value as Record<string, unknown>)
-        .filter(([, v]) => v !== undefined)
         .sort(([a], [b]) => a.localeCompare(b));
       return `{${entries
         .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
@@ -703,7 +701,6 @@ test(
         return `[${value.map(stableStringify).join(',')}]`;
       }
       const entries = Object.entries(value as Record<string, unknown>)
-        .filter(([, v]) => v !== undefined)
         .sort(([a], [b]) => a.localeCompare(b));
       return `{${entries
         .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
@@ -789,7 +786,6 @@ test(
         return `[${value.map(stableStringify).join(',')}]`;
       }
       const entries = Object.entries(value as Record<string, unknown>)
-        .filter(([, v]) => v !== undefined)
         .sort(([a], [b]) => a.localeCompare(b));
       return `{${entries
         .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)

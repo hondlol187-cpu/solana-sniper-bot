@@ -55,6 +55,7 @@ export type SettlementStatus =
   | 'pending'
   | 'risk-applied'
   | 'execution-applied'
+  | 'plan-applied'
   | 'committed';
 
 export interface ExecutionSettlement {
@@ -753,6 +754,73 @@ export async function settleExecutionOutcome(
   if (
     settlement.status ===
     'execution-applied'
+  ) {
+    const execution =
+      await loadExecutionJournal(
+        settlement.executionId
+      );
+
+    if (!execution) {
+      throw new Error(
+        'Execution journal disappeared before plan outcome'
+      );
+    }
+
+    const {
+      recordExecutionOutcome,
+    } = await import(
+      './execution-plan.js'
+    );
+
+    await recordExecutionOutcome({
+      planId:
+        settlement.planId,
+
+      planInstanceId:
+        settlement
+          .planInstanceId,
+
+      executionId:
+        settlement
+          .executionId,
+
+      settlementId:
+        settlement
+          .settlementId,
+
+      artifactId:
+        settlement.artifactId,
+
+      outcome:
+        settlement.outcome,
+
+      transactionSignature:
+        execution
+          .transactionSignature,
+
+      observedSlot:
+        settlement
+          .observedSlot,
+
+      confirmationStatus:
+        settlement
+          .confirmationStatus,
+
+      failureReason:
+        settlement
+          .failureReason,
+    });
+
+    settlement =
+      await advance(
+        settlement,
+        'plan-applied'
+      );
+  }
+
+  if (
+    settlement.status ===
+    'plan-applied'
   ) {
     const terminalExecution =
       await loadExecutionJournal(

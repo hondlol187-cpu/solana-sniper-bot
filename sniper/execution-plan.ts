@@ -87,6 +87,29 @@ export interface ApprovedExecutionPlanPayload {
   transactionPolicy?: ApprovedTransactionPolicy;
 }
 
+export interface ExecutionOutcomeSummary {
+  executionId: string;
+  settlementId: string;
+  artifactId: string;
+
+  outcome:
+    | 'confirmed'
+    | 'failed';
+
+  transactionSignature?:
+    string;
+
+  observedSlot: number;
+
+  confirmationStatus?:
+    | 'confirmed'
+    | 'finalized';
+
+  failureReason?: string;
+
+  recordedAt: string;
+}
+
 export interface ApprovedExecutionPlanState {
   status: 'prepared' | 'simulated' | 'cancelled';
   simulationCount: number;
@@ -96,6 +119,8 @@ export interface ApprovedExecutionPlanState {
   lastSimulationResult?: string;
   cancellationReason?: string;
   simulationReceipt?: SimulationReceipt;
+  executionOutcome?:
+    ExecutionOutcomeSummary;
 }
 
 export interface SimulationReceipt {
@@ -580,6 +605,255 @@ export async function loadApprovedExecutionPlan(
       parsed.payload as ApprovedExecutionPlanPayload,
     sha256: parsed.sha256,
   });
+}
+
+export interface RecordExecutionOutcomeInput {
+  planId: string;
+  planInstanceId: string;
+
+  executionId: string;
+  settlementId: string;
+  artifactId: string;
+
+  outcome:
+    | 'confirmed'
+    | 'failed';
+
+  transactionSignature?:
+    string;
+
+  observedSlot: number;
+
+  confirmationStatus?:
+    | 'confirmed'
+    | 'finalized';
+
+  failureReason?: string;
+}
+
+export async function recordExecutionOutcome(
+  input:
+    RecordExecutionOutcomeInput
+): Promise<
+  ApprovedExecutionPlanFile
+> {
+  if (
+    !Number.isSafeInteger(
+      input.observedSlot
+    ) ||
+    input.observedSlot < 0
+  ) {
+    throw new Error(
+      'Execution outcome slot is invalid'
+    );
+  }
+
+  if (
+    input.outcome ===
+    'confirmed'
+  ) {
+    if (
+      !input
+        .transactionSignature
+        ?.trim()
+    ) {
+      throw new Error(
+        'Confirmed outcome requires transaction signature'
+      );
+    }
+
+    if (
+      input
+        .confirmationStatus !==
+        'confirmed' &&
+      input
+        .confirmationStatus !==
+        'finalized'
+    ) {
+      throw new Error(
+        'Confirmed outcome requires confirmation status'
+      );
+    }
+
+    if (
+      input.failureReason !==
+      undefined
+    ) {
+      throw new Error(
+        'Confirmed outcome must not contain failure reason'
+      );
+    }
+  }
+
+  if (
+    input.outcome ===
+    'failed'
+  ) {
+    if (
+      !input
+        .failureReason
+        ?.trim()
+    ) {
+      throw new Error(
+        'Failed outcome requires failure reason'
+      );
+    }
+  }
+
+  return withFileLock(
+    getApprovedExecutionPlanLockTarget(
+      input.planId
+    ),
+    async () => {
+      const plan =
+        await loadApprovedExecutionPlan(
+          input.planId
+        );
+
+      if (
+        plan.planInstanceId !==
+        input.planInstanceId
+      ) {
+        throw new Error(
+          'Execution outcome plan-instance mismatch'
+        );
+      }
+
+      if (
+        plan.state.status !==
+        'simulated'
+      ) {
+        throw new Error(
+          `Execution outcome cannot be recorded for plan status ${plan.state.status}`
+        );
+      }
+
+      const receipt =
+        plan.state
+          .simulationReceipt;
+
+      if (!receipt) {
+        throw new Error(
+          'Plan has no simulation receipt'
+        );
+      }
+
+      if (
+        receipt.artifactId !==
+        input.artifactId
+      ) {
+        throw new Error(
+          'Execution outcome artifact does not match receipt'
+        );
+      }
+
+      const existing =
+        plan.state
+          .executionOutcome;
+
+      if (existing) {
+        const same =
+          existing.executionId ===
+            input.executionId &&
+          existing.settlementId ===
+            input.settlementId &&
+          existing.artifactId ===
+            input.artifactId &&
+          existing.outcome ===
+            input.outcome &&
+          existing.observedSlot ===
+            input.observedSlot &&
+          existing
+            .transactionSignature ===
+            input
+              .transactionSignature &&
+          existing
+            .confirmationStatus ===
+            input
+              .confirmationStatus &&
+          existing.failureReason ===
+            input.failureReason;
+
+        if (!same) {
+          throw new Error(
+            'Conflicting execution outcome is already recorded'
+          );
+        }
+
+        return plan;
+      }
+
+      const outcome:
+        ExecutionOutcomeSummary = {
+          executionId:
+            input.executionId,
+
+          settlementId:
+            input.settlementId,
+
+          artifactId:
+            input.artifactId,
+
+          outcome:
+            input.outcome,
+
+          observedSlot:
+            input.observedSlot,
+
+          recordedAt:
+            new Date()
+              .toISOString(),
+
+          ...(input
+            .transactionSignature !==
+            undefined
+            ? {
+                transactionSignature:
+                  input
+                    .transactionSignature,
+              }
+            : {}),
+
+          ...(input
+            .confirmationStatus !==
+            undefined
+            ? {
+                confirmationStatus:
+                  input
+                    .confirmationStatus,
+              }
+            : {}),
+
+          ...(input
+            .failureReason !==
+            undefined
+            ? {
+                failureReason:
+                  input
+                    .failureReason,
+              }
+            : {}),
+        };
+
+      return saveApprovedExecutionPlanFile({
+        planId:
+          plan.planId,
+
+        planInstanceId:
+          plan.planInstanceId,
+
+        state: {
+          ...plan.state,
+
+          executionOutcome:
+            outcome,
+        },
+
+        payload:
+          plan.payload,
+      });
+    }
+  );
 }
 
 export async function deleteApprovedExecutionPlan(
