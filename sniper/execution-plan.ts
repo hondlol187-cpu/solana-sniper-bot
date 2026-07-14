@@ -28,6 +28,10 @@ import type {
   SimulationArtifactRpc,
 } from './simulation-artifact-rpc.js';
 
+import type {
+  ApprovedTransactionPolicy,
+} from './transaction-manifest.js';
+
 import { config } from './config.js';
 
 import {
@@ -72,6 +76,15 @@ export interface ApprovedExecutionPlanPayload {
   approvalReasons: string[];
   quoteAgeMs: number;
   liquidityDropPct: number | null;
+
+  /*
+   * Optional transaction policy snapshot.
+   * Included in the plan hash when present.
+   * New plans should include this; old plans
+   * will have it as undefined (assessTransactionManifest
+   * falls back to a safe default allowlist).
+   */
+  transactionPolicy?: ApprovedTransactionPolicy;
 }
 
 export interface ApprovedExecutionPlanState {
@@ -110,6 +123,17 @@ export interface SimulationReceipt {
   verifiedAtSlot?: number;
   verifiedAtBlockHeight?: number;
   addressLookupTablesSha256?: string;
+
+  /*
+   * Transaction manifest evidence.
+   * Internally computed — the caller cannot
+   * supply these hashes.
+   */
+  transactionManifestSha256?: string;
+  invokedProgramIds?: string[];
+  writableAccountsSha256?: string;
+  instructionDataSha256?: string;
+  transactionPolicyOk?: boolean;
 
   walletPublicKey: string;
   expectedCluster: string;
@@ -1160,36 +1184,51 @@ export async function commitSimulationArtifact(
    * The spend guard in transaction-guard.ts
    * handles the actual SOL outflow check.
    *
-   * What we CAN verify here: the route AMM keys
-   * in the transaction's account keys include
-   * the plan's approvedPoolAddress.
+   * What we verify here: the canonical transaction
+   * manifest is built, every instruction is checked
+   * against the plan's transaction policy, and route
+   * accounts must be referenced by an invoked
+   * instruction (not merely present in the account list).
    */
-  const resolvedAccounts =
-    await resolveTransactionAccounts(
+  const {
+    buildTransactionManifest,
+    assessTransactionManifest,
+    computeWritableAccountsSha256,
+    computeInstructionDataSha256,
+  } = await import(
+    './transaction-manifest.js'
+  );
+
+  const manifest =
+    await buildTransactionManifest(
       transaction,
       rpc
     );
 
-  const accountKeySet =
-    new Set(
-      resolvedAccounts.accountKeys
+  const policyResult =
+    assessTransactionManifest(
+      manifest,
+      planFile
     );
 
-  const expectedAmmKeys =
-    planFile.payload.routeAmmKeys;
-
-  for (
-    const ammKey of
-    expectedAmmKeys
-  ) {
-    if (
-      !accountKeySet.has(ammKey)
-    ) {
-      throw new Error(
-        `Transaction is missing expected AMM key: ${ammKey}`
-      );
-    }
+  if (!policyResult.ok) {
+    throw new Error(
+      [
+        'Transaction policy check failed:',
+        ...policyResult.reasons,
+      ].join(' ')
+    );
   }
+
+  const writableAccountsSha256 =
+    computeWritableAccountsSha256(
+      manifest
+    );
+
+  const instructionDataSha256 =
+    computeInstructionDataSha256(
+      manifest
+    );
 
   /*
    * Verify the transaction against current state from
@@ -1360,14 +1399,25 @@ export async function commitSimulationArtifact(
       ? { returnDataSha256 }
       : {}),
 
-    ...(resolvedAccounts
-      .addressLookupTablesSha256
+    ...(manifest.lookupTablesSha256
       ? {
           addressLookupTablesSha256:
-            resolvedAccounts
-              .addressLookupTablesSha256,
+            manifest.lookupTablesSha256,
         }
       : {}),
+
+    transactionManifestSha256:
+      manifest.manifestSha256,
+
+    invokedProgramIds:
+      policyResult.invokedProgramIds,
+
+    writableAccountsSha256,
+
+    instructionDataSha256,
+
+    transactionPolicyOk:
+      policyResult.ok,
 
     walletPublicKey:
       expectedWallet,

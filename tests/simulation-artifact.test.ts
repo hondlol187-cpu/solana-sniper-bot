@@ -602,7 +602,7 @@ test(
               poolKey: wrongPool,
             }),
         }, createArtifactRpc()),
-      /AMM key/
+      /route.*account|policy|AMM/i
     );
   }
 );
