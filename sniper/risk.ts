@@ -681,6 +681,89 @@ export async function getRiskState(
   );
 }
 
+export async function releaseReservationIfPresent(
+  reservationId: string,
+  expectedMint: string,
+  currentBalanceLamports: bigint
+): Promise<{
+  released: boolean;
+}> {
+  validateReservationId(
+    reservationId
+  );
+
+  return serialize(
+    async () => {
+      const state =
+        await loadUnsafe(
+          currentBalanceLamports
+        );
+
+      const index =
+        state.reservations
+          .findIndex(
+            (reservation) =>
+              reservation.id ===
+              reservationId
+          );
+
+      if (index < 0) {
+        if (
+          state
+            .committedReservationIds
+            .includes(
+              reservationId
+            )
+        ) {
+          throw new Error(
+            'Cannot release a committed risk reservation'
+          );
+        }
+
+        return {
+          released: false,
+        };
+      }
+
+      const reservation =
+        state.reservations[
+          index
+        ];
+
+      if (
+        reservation.mint !==
+        expectedMint
+      ) {
+        throw new Error(
+          'Reservation mint confirmation does not match'
+        );
+      }
+
+      state.reservations.splice(
+        index,
+        1
+      );
+
+      await saveUnsafe(
+        state
+      );
+
+      await auditOnce(
+        'risk.reservation.released',
+        `risk-released:${reservationId}`,
+        {
+          reservationId,
+          expectedMint,
+        }
+      );
+
+      return {
+        released: true,
+      };
+    }
+  );
+}
+
 export async function resetRiskState(
   currentBalanceLamports: bigint
 ): Promise<void> {

@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   rm,
+  writeFile,
 } from 'node:fs/promises';
 
 import { tmpdir } from 'node:os';
@@ -17,6 +18,8 @@ import type {
 
 let configured = false;
 let planDir: string;
+let riskFile: string;
+let auditFile: string;
 
 async function configureEnvironment() {
   if (configured) return;
@@ -26,13 +29,20 @@ async function configureEnvironment() {
   );
 
   planDir = join(dir, 'plans');
+  riskFile = join(dir, 'risk.json');
+  auditFile = join(dir, 'audit.jsonl');
 
   process.env.LIVE_TRADING = 'false';
   process.env.RPC_URL = 'https://api.mainnet-beta.solana.com';
   process.env.WALLET_PUBLIC_KEY = '11111111111111111111111111111111';
   process.env.OUTPUT_MINT = 'So11111111111111111111111111111111111111112';
   process.env.APPROVED_EXECUTION_PLAN_DIR = planDir;
+  process.env.RISK_FILE = riskFile;
+  process.env.AUDIT_FILE = auditFile;
   process.env.MAX_APPROVED_EXECUTION_PLAN_AGE_SECONDS = '30';
+  process.env.MAX_DAILY_SPEND_SOL = '0.2';
+  process.env.MAX_DAILY_TRADES = '3';
+  process.env.MAX_DAILY_DRAWDOWN_SOL = '0.1';
 
   configured = true;
 }
@@ -42,6 +52,8 @@ async function cleanAll() {
 
   await rm(planDir, { force: true, recursive: true });
   await mkdir(planDir, { recursive: true, mode: 0o700 });
+  await rm(riskFile, { force: true });
+  await rm(auditFile, { force: true });
 }
 
 const PLAN_ID = 'test-plan-id';
@@ -51,6 +63,180 @@ const ARTIFACT_ID = 'test-artifact-id';
 const SIGNED_TX_SHA = 'a'.repeat(64);
 const MSG_SHA = 'b'.repeat(64);
 const LAST_VALID_BLOCK_HEIGHT = 200_000_000;
+
+const FAKE_WALLET_BALANCE = 1_000_000_000n;
+
+const WALLET_PUBLIC_KEY =
+  '11111111111111111111111111111111';
+const EXACT_MINT = 'TEST_MINT_A';
+const BUY_LAMPORTS = '50000000';
+
+/*
+ * Write a minimal v3 plan file that loadApprovedExecutionPlan
+ * accepts. The reconciler only reads plan.planInstanceId,
+ * plan.payload.walletPublicKey, and plan.payload.exactMint.
+ */
+async function writePlan(
+  planId: string,
+  planInstanceId: string
+) {
+  const { createHash } =
+    await import('node:crypto');
+
+  const { getApprovedExecutionPlanPath } =
+    await import(
+      '../sniper/execution-plan.js'
+    );
+
+  const state = {
+    status: 'simulated' as const,
+    simulationCount: 1,
+    createdAt:
+      new Date(
+        Date.now() - 1_000
+      ).toISOString(),
+    simulatedAt:
+      new Date().toISOString(),
+    simulationReceipt: {
+      transactionMessageSha256:
+        MSG_SHA,
+      serializedTransactionSha256:
+        'c'.repeat(64),
+      recentBlockhash:
+        '11111111111111111111111111111111',
+      lastValidBlockHeight:
+        LAST_VALID_BLOCK_HEIGHT,
+      simulatedAt:
+        new Date().toISOString(),
+      rpcEndpoint:
+        'https://api.mainnet-beta.solana.com',
+      contextSlot: 1,
+      err: null,
+      logsSha256: 'd'.repeat(64),
+      walletPublicKey: WALLET_PUBLIC_KEY,
+      expectedCluster: 'mainnet-beta',
+      planSha256BeforeSimulation:
+        'e'.repeat(64),
+      transactionPolicyOk: true,
+      transactionPolicySha256:
+        'f'.repeat(64),
+      artifactId: ARTIFACT_ID,
+      artifactSha256: '1'.repeat(64),
+    },
+  };
+
+  const payload = {
+    signature: 'sig-reconcile-1',
+    exactMint: EXACT_MINT,
+    createdAt:
+      new Date(1_000_000).toISOString(),
+    quoteReceivedAtMs: 995_000,
+    walletPublicKey: WALLET_PUBLIC_KEY,
+    expectedCluster: 'mainnet-beta',
+    buyLamports: BUY_LAMPORTS,
+    approvedPoolAddress: 'POOL_1',
+    approvedQuoteMint:
+      'So11111111111111111111111111111111111111112',
+    approvedLiquiditySol: 100,
+    currentPoolAddress: 'POOL_1',
+    currentQuoteMint:
+      'So11111111111111111111111111111111111111112',
+    currentLiquiditySol: 90,
+    routeHopCount: 1,
+    routeLabels: ['Raydium AMM'],
+    routeAmmKeys: ['POOL_1'],
+    quoteInputMint:
+      'So11111111111111111111111111111111111111112',
+    quoteOutputMint: EXACT_MINT,
+    quoteInAmount: BUY_LAMPORTS,
+    quoteOutAmount: '1000000',
+    quoteOtherAmountThreshold: '900000',
+    quoteSlippageBps: 150,
+    quotePriceImpactPct: '0.5',
+    quoteRoutePlan: [],
+    routeOk: true,
+    routeReasons: [],
+    approvalOk: true,
+    approvalReasons: [],
+    quoteAgeMs: 100,
+  };
+
+  const stableStringify = (
+    value: unknown
+  ): string => {
+    if (
+      value === null ||
+      typeof value !== 'object'
+    ) {
+      return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+      return `[${value
+        .map(stableStringify)
+        .join(',')}]`;
+    }
+
+    const entries = Object.entries(
+      value as Record<string, unknown>
+    )
+      .filter(
+        ([, v]) => v !== undefined
+      )
+      .sort(([a], [b]) =>
+        a.localeCompare(b)
+      );
+
+    return `{${entries
+      .map(
+        ([k, v]) =>
+          `${JSON.stringify(k)}:${stableStringify(v)}`
+      )
+      .join(',')}}`;
+  };
+
+  const hash = createHash('sha256')
+    .update(
+      stableStringify({
+        version: 3,
+        planId,
+        planInstanceId,
+        state,
+        payload,
+      })
+    )
+    .digest('hex');
+
+  const path =
+    getApprovedExecutionPlanPath(
+      planId
+    );
+
+  await mkdir(
+    join(path, '..'),
+    {
+      recursive: true,
+      mode: 0o700,
+    }
+  );
+
+  await writeFile(
+    path,
+    JSON.stringify(
+      {
+        version: 3,
+        planId,
+        planInstanceId,
+        state,
+        payload,
+        sha256: hash,
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+}
 
 function createFakeRpc(
   status:
@@ -81,6 +267,10 @@ function createFakeRpc(
         err: status.err,
       };
     },
+
+    async getWalletBalance() {
+      return FAKE_WALLET_BALANCE;
+    },
   };
 }
 
@@ -90,6 +280,10 @@ function createErrorRpc(
   return {
     async getSignatureStatus() {
       throw error;
+    },
+
+    async getWalletBalance() {
+      return FAKE_WALLET_BALANCE;
     },
   };
 }
@@ -102,10 +296,28 @@ async function createSubmittedJournal() {
     markExecutionSubmitted,
   } = await import('../sniper/execution-journal.js');
 
+  const {
+    reserveTradeOnce,
+  } = await import(
+    '../sniper/risk.js'
+  );
+
+  await writePlan(
+    PLAN_ID,
+    PLAN_INSTANCE_ID
+  );
+
   const journal = await beginExecution(
     PLAN_ID,
     PLAN_INSTANCE_ID,
     ARTIFACT_ID
+  );
+
+  await reserveTradeOnce(
+    journal.riskReservationId!,
+    EXACT_MINT,
+    BigInt(BUY_LAMPORTS),
+    FAKE_WALLET_BALANCE
   );
 
   await markExecutionSigning(journal.executionId);
@@ -135,10 +347,28 @@ async function createBroadcastingJournal() {
     markExecutionBroadcastReady,
   } = await import('../sniper/execution-journal.js');
 
+  const {
+    reserveTradeOnce,
+  } = await import(
+    '../sniper/risk.js'
+  );
+
+  await writePlan(
+    PLAN_ID,
+    PLAN_INSTANCE_ID
+  );
+
   const journal = await beginExecution(
     PLAN_ID,
     PLAN_INSTANCE_ID,
     ARTIFACT_ID
+  );
+
+  await reserveTradeOnce(
+    journal.riskReservationId!,
+    EXACT_MINT,
+    BigInt(BUY_LAMPORTS),
+    FAKE_WALLET_BALANCE
   );
 
   await markExecutionSigning(journal.executionId);
@@ -421,6 +651,10 @@ test(
           confirmationStatus: 'confirmed',
           err: null,
         };
+      },
+
+      async getWalletBalance() {
+        return FAKE_WALLET_BALANCE;
       },
     };
 

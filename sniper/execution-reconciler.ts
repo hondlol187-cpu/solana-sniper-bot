@@ -36,6 +36,10 @@ export interface ExecutionStatusRpc {
     ExecutionSignatureStatus |
     null
   >;
+
+  getWalletBalance(
+    walletPublicKey: string
+  ): Promise<bigint>;
 }
 
 export class ConnectionExecutionStatusRpc
@@ -80,6 +84,27 @@ implements ExecutionStatusRpc {
         status.err ??
         null,
     };
+  }
+
+  async getWalletBalance(
+    walletPublicKey: string
+  ): Promise<bigint> {
+    const {
+      PublicKey,
+    } = await import(
+      '@solana/web3.js'
+    );
+
+    const balance =
+      await this.connection
+        .getBalance(
+          new PublicKey(
+            walletPublicKey
+          ),
+          'confirmed'
+        );
+
+    return BigInt(balance);
   }
 }
 
@@ -152,6 +177,39 @@ export async function reconcileExecution(
     );
   }
 
+  /*
+   * Load the plan to get the wallet public key (for balance
+   * queries) and to verify the journal's planInstanceId.
+   */
+  const {
+    loadApprovedExecutionPlan,
+  } = await import(
+    './execution-plan.js'
+  );
+
+  const plan =
+    await loadApprovedExecutionPlan(
+      journal.planId
+    );
+
+  if (
+    plan.planInstanceId !==
+    journal.planInstanceId
+  ) {
+    throw new Error(
+      'Execution journal plan-instance mismatch'
+    );
+  }
+
+  const riskReservationId =
+    journal.riskReservationId;
+
+  if (!riskReservationId) {
+    throw new Error(
+      'Execution journal has no risk reservation'
+    );
+  }
+
   let rpcStatus: ExecutionSignatureStatus | null;
 
   try {
@@ -181,6 +239,36 @@ export async function reconcileExecution(
   }
 
   if (rpcStatus.err !== null) {
+    /*
+     * On-chain failure: release the risk reservation BEFORE
+     * marking the journal failed. Ordering: risk release →
+     * journal failed → audit. If the process crashes between
+     * steps, rerunning reconciliation is safe:
+     *   - If the journal is still 'broadcasting'/'submitted',
+     *     releaseReservationIfPresent returns {released:false}
+     *     on the second run (reservation already gone) and the
+     *     journal transition proceeds.
+     *   - If the journal already reached 'failed', the top-of-
+     *     function early-return handles idempotency.
+     */
+    const {
+      releaseReservationIfPresent,
+    } = await import(
+      './risk.js'
+    );
+
+    const balance =
+      await rpc.getWalletBalance(
+        plan.payload
+          .walletPublicKey
+      );
+
+    await releaseReservationIfPresent(
+      riskReservationId,
+      plan.payload.exactMint,
+      balance
+    );
+
     const { markSubmittedExecutionFailed } = await import(
       './execution-journal.js'
     );
@@ -212,6 +300,38 @@ export async function reconcileExecution(
     confirmationStatus ===
       'finalized'
   ) {
+    /*
+     * Confirmation: commit the risk reservation and record
+     * the completed trade BEFORE marking the journal
+     * confirmed. Ordering: risk commit → completed count →
+     * journal confirmed → audit. Both commitReservation and
+     * recordTradeCompleted are idempotent, so a crash between
+     * steps is safe on rerun (the top-of-function early-return
+     * handles a journal that already reached 'confirmed').
+     */
+    const {
+      commitReservation,
+      recordTradeCompleted,
+    } = await import(
+      './risk.js'
+    );
+
+    const balance =
+      await rpc.getWalletBalance(
+        plan.payload
+          .walletPublicKey
+      );
+
+    await commitReservation(
+      riskReservationId,
+      balance
+    );
+
+    await recordTradeCompleted(
+      journal.executionId,
+      balance
+    );
+
     const confirmed =
       await markExecutionConfirmed(
         executionId,
