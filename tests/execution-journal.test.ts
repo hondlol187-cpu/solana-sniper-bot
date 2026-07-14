@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   mkdtemp,
   mkdir,
+  readFile,
   rm,
   writeFile,
   lstat,
@@ -469,6 +470,141 @@ test(
         journal.executionId
       ),
       /JSON|Unexpected|SyntaxError/i
+    );
+  }
+);
+
+test(
+  'tampered journal hash is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      loadExecutionJournal,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    const journal = await beginExecution(
+      PLAN_ID,
+      PLAN_INSTANCE_ID,
+      ARTIFACT_ID
+    );
+
+    const path = join(
+      planDir,
+      'execution-journals',
+      `${journal.executionId}.json`
+    );
+
+    /*
+     * Tamper with the status field without
+     * updating the hash.
+     */
+    const parsed = JSON.parse(
+      await readFile(path, 'utf8')
+    );
+
+    parsed.updatedAt =
+      new Date(
+        Date.parse(parsed.createdAt) +
+          999_999_999
+      ).toISOString();
+
+    await writeFile(
+      path,
+      JSON.stringify(parsed, null, 2),
+      'utf8'
+    );
+
+    await assert.rejects(
+      loadExecutionJournal(
+        journal.executionId
+      ),
+      /hash mismatch/i
+    );
+  }
+);
+
+test(
+  'journal symlink is rejected',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      loadExecutionJournal,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    const { rm, symlink } = await import(
+      'node:fs/promises'
+    );
+
+    const journal = await beginExecution(
+      PLAN_ID,
+      PLAN_INSTANCE_ID,
+      ARTIFACT_ID
+    );
+
+    const path = join(
+      planDir,
+      'execution-journals',
+      `${journal.executionId}.json`
+    );
+
+    await rm(path);
+    await symlink('/dev/null', path);
+
+    await assert.rejects(
+      loadExecutionJournal(
+        journal.executionId
+      ),
+      /symbolic link/i
+    );
+  }
+);
+
+test(
+  'listExecutionJournals returns sorted journals',
+  async () => {
+    await configureEnvironment();
+    await cleanAll();
+
+    const {
+      beginExecution,
+      listExecutionJournals,
+    } = await import(
+      '../sniper/execution-journal.js'
+    );
+
+    await beginExecution(
+      'plan-a',
+      'instance-a',
+      'artifact-a'
+    );
+
+    await beginExecution(
+      'plan-b',
+      'instance-b',
+      'artifact-b'
+    );
+
+    const journals =
+      await listExecutionJournals();
+
+    assert.equal(journals.length, 2);
+
+    /*
+     * Journals should be sorted by createdAt.
+     */
+    assert.ok(
+      journals[0].createdAt <=
+        journals[1].createdAt
     );
   }
 );
