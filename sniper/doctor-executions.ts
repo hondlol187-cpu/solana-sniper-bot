@@ -18,6 +18,9 @@ async function main():
     journalModule,
     artifactModule,
     executionPlanModule,
+    riskModule,
+    configModule,
+    rpcModule,
   ] = await Promise.all([
     import(
       './execution-journal.js'
@@ -27,6 +30,15 @@ async function main():
     ),
     import(
       './execution-plan.js'
+    ),
+    import(
+      './risk.js'
+    ),
+    import(
+      './config.js'
+    ),
+    import(
+      './rpc.js'
     ),
   ]);
 
@@ -49,6 +61,66 @@ async function main():
     );
 
     journals = [];
+  }
+
+  /*
+   * Load the risk state once. This requires a current
+   * wallet balance, which we fetch via the RPC pool.
+   * If the RPC is unavailable, we skip the risk
+   * cross-check rather than failing the entire doctor.
+   */
+  let activeReservationIds =
+    new Set<string>();
+  let committedReservationIds =
+    new Set<string>();
+
+  try {
+    const rpcPool =
+      new rpcModule.RpcPool();
+
+    await rpcPool.initialize();
+    await rpcPool
+      .ensureCurrentHealthy();
+
+    const currentBalance =
+      BigInt(
+        await rpcPool
+          .current()
+          .getBalance(
+            configModule
+              .config
+              .walletPublicKey,
+            'confirmed'
+          )
+      );
+
+    const riskState =
+      await riskModule
+        .getRiskState(
+          currentBalance
+        );
+
+    activeReservationIds =
+      new Set(
+        riskState.reservations.map(
+          (reservation) =>
+            reservation.id
+        )
+      );
+
+    committedReservationIds =
+      new Set(
+        riskState
+          .committedReservationIds
+      );
+  } catch (error) {
+    warnings.push(
+      `Risk state cross-check skipped: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`
+    );
   }
 
   for (const journal of journals) {
@@ -109,21 +181,57 @@ async function main():
       );
     }
 
+    const reservationId =
+      journal.riskReservationId;
+
     if (
       journal.status ===
-      'broadcasting'
+        'broadcasting' ||
+      journal.status ===
+        'submitted'
     ) {
+      if (
+        !reservationId ||
+        !activeReservationIds.has(
+          reservationId
+        )
+      ) {
+        errors.push(
+          `Execution ${journal.executionId} has no active risk reservation`
+        );
+      }
+
       warnings.push(
-        `Execution ${journal.executionId} is broadcasting and requires reconciliation`
+        `Execution ${journal.executionId} is ${journal.status} and requires reconciliation`
       );
     }
 
     if (
       journal.status ===
-      'submitted'
+      'confirmed'
+    ) {
+      if (
+        !reservationId ||
+        !committedReservationIds.has(
+          reservationId
+        )
+      ) {
+        errors.push(
+          `Confirmed execution ${journal.executionId} has no committed risk reservation`
+        );
+      }
+    }
+
+    if (
+      journal.status ===
+        'failed' &&
+      reservationId &&
+      activeReservationIds.has(
+        reservationId
+      )
     ) {
       warnings.push(
-        `Execution ${journal.executionId} is submitted and requires reconciliation`
+        `Failed execution ${journal.executionId} still has an active risk reservation`
       );
     }
 
@@ -145,6 +253,41 @@ async function main():
           `Execution ${journal.executionId} has been signing for ${ageMs}ms`
         );
       }
+    }
+  }
+
+  /*
+   * Detect orphan reservations: risk reservations
+   * that have no matching execution journal.
+   */
+  const journalReservationIds =
+    new Set(
+      journals
+        .map(
+          (journal) =>
+            journal
+              .riskReservationId
+        )
+        .filter(
+          (
+            value
+          ): value is string =>
+            Boolean(value)
+        )
+    );
+
+  for (
+    const reservationId of
+    activeReservationIds
+  ) {
+    if (
+      !journalReservationIds.has(
+        reservationId
+      )
+    ) {
+      errors.push(
+        `Orphan risk reservation ${reservationId} has no execution journal`
+      );
     }
   }
 
