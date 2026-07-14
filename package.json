@@ -37,6 +37,7 @@
     "sniper:doctor-executions": "tsx sniper/doctor-executions.ts",
     "sniper:recover-stale-signing": "tsx sniper/recover-stale-signing.ts",
     "sniper:recover-execution-settlements": "tsx sniper/recover-execution-settlements.ts",
+    "sniper:execution-history": "tsx sniper/execution-history.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {
