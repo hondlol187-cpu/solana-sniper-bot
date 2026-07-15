@@ -3,7 +3,6 @@ import {
 } from 'node:crypto';
 
 import {
-  Connection,
   Keypair,
 } from '@solana/web3.js';
 
@@ -12,6 +11,10 @@ import bs58 from 'bs58';
 import {
   config,
 } from './config.js';
+
+import type {
+  VerifiedExecutionRpc,
+} from './verified-execution-rpc.js';
 
 import {
   loadApprovedExecutionPlan,
@@ -64,7 +67,7 @@ export interface VerifiedExecutionResult {
 export async function executeVerifiedPlan(
   planId: string,
   signer: Keypair,
-  connection: Connection
+  rpc: VerifiedExecutionRpc
 ): Promise<VerifiedExecutionResult> {
   if (!config.liveTrading) {
     throw new Error(
@@ -213,25 +216,17 @@ export async function executeVerifiedPlan(
   }
 
   const [
-    blockhashStatus,
+    blockhashValid,
     currentBlockHeight,
   ] = await Promise.all([
-    connection
-      .isBlockhashValid(
-        receipt.recentBlockhash,
-        {
-          commitment:
-            'processed',
-        }
-      ),
+    rpc.isBlockhashValid(
+      receipt.recentBlockhash
+    ),
 
-    connection
-      .getBlockHeight(
-        'processed'
-      ),
+    rpc.getCurrentBlockHeight(),
   ]);
 
-  if (!blockhashStatus.value) {
+  if (!blockhashValid) {
     throw new Error(
       'Verified blockhash is no longer valid'
     );
@@ -284,11 +279,8 @@ export async function executeVerifiedPlan(
   }
 
   const currentBalance =
-    BigInt(
-      await connection.getBalance(
-        signer.publicKey,
-        'confirmed'
-      )
+    await rpc.getWalletBalance(
+      signer.publicKey
     );
 
   const requiredBalance =
@@ -387,17 +379,10 @@ export async function executeVerifiedPlan(
     );
 
     const rpcSignature =
-      await connection
-        .sendRawTransaction(
-          signed
-            .signedTransactionBytes,
-          {
-            skipPreflight: false,
-            maxRetries: 0,
-            preflightCommitment:
-              'confirmed',
-          }
-        );
+      await rpc.sendExactTransaction(
+        signed
+          .signedTransactionBytes
+      );
 
     if (
       rpcSignature !==
@@ -448,12 +433,8 @@ export async function executeVerifiedPlan(
 
       try {
         const balance =
-          BigInt(
-            await connection
-              .getBalance(
-                signer.publicKey,
-                'confirmed'
-              )
+          await rpc.getWalletBalance(
+            signer.publicKey
           );
 
         await releaseReservation(

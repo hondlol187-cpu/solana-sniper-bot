@@ -195,11 +195,10 @@ test(
     /*
      * The safety interlocks in executeVerifiedPlan all
      * throw BEFORE the broadcast phase. The only
-     * sendRawTransaction call is in the same file but
-     * after all interlocks. This is already enforced by
-     * tests/live-broadcast-surface.test.ts.
+     * sendRawTransaction call is in verified-execution-rpc.ts,
+     * not in verified-execution-core.ts.
      */
-    const source =
+    const coreSource =
       await readFile(
         join(
           process.cwd(),
@@ -209,8 +208,23 @@ test(
         'utf8'
       );
 
+    assert.doesNotMatch(
+      coreSource,
+      /\.sendRawTransaction\(/
+    );
+
+    const rpcSource =
+      await readFile(
+        join(
+          process.cwd(),
+          'sniper',
+          'verified-execution-rpc.ts'
+        ),
+        'utf8'
+      );
+
     const sendRawCount = (
-      source.match(
+      rpcSource.match(
         /\.sendRawTransaction\(/g
       ) ?? []
     ).length;
@@ -218,7 +232,7 @@ test(
     assert.equal(
       sendRawCount,
       1,
-      'exactly one sendRawTransaction call in verified-execution-core.ts'
+      'exactly one sendRawTransaction call in verified-execution-rpc.ts'
     );
   }
 );

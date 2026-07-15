@@ -154,12 +154,23 @@ async function main():
   await rpcPool
     .ensureCurrentHealthy();
 
+  const {
+    ConnectionVerifiedExecutionRpc,
+  } = await import(
+    './verified-execution-rpc.js'
+  );
+
+  const executionRpc =
+    new ConnectionVerifiedExecutionRpc(
+      rpcPool.current()
+    );
+
   const result =
     await executionModule
       .executeVerifiedPlan(
         planId,
         signer,
-        rpcPool.current()
+        executionRpc
       );
 
   console.log(

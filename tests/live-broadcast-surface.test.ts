@@ -86,7 +86,7 @@ test(
           )
       ),
       [
-        'sniper/verified-execution-core.ts',
+        'sniper/verified-execution-rpc.ts',
       ]
     );
   }
