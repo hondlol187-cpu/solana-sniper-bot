@@ -12,6 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "verify:release-surface": "tsx sniper/verify-release-surface.ts",
+    "verify:audit-findings": "tsx sniper/verify-audit-findings.ts",
+    "release:manifest": "tsx sniper/generate-release-manifest.ts",
+    "release:verify": "tsx sniper/verify-release-manifest.ts",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run verify:release-surface",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
@@ -47,6 +50,7 @@
     "sniper:archive-execution-evidence": "tsx sniper/archive-execution-evidence.ts",
     "sniper:verify-execution-archives": "tsx sniper/verify-execution-archives.ts",
     "sniper:devnet-smoke": "tsx sniper/devnet-smoke.ts",
+    "sniper:emergency-stop": "tsx sniper/emergency-stop-cli.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

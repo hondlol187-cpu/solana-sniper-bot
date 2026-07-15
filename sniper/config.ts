@@ -529,6 +529,22 @@ export const config = {
       1,
       30
     ),
+
+  maxCanaryExecutionLamports:
+    numberEnv(
+      'MAX_CANARY_EXECUTION_LAMPORTS',
+      1_000_000,
+      100_000,
+      10_000_000
+    ),
+
+  maxConcurrentLiveExecutions:
+    numberEnv(
+      'MAX_CONCURRENT_LIVE_EXECUTIONS',
+      1,
+      1,
+      1
+    ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

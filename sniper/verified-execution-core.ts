@@ -25,6 +25,10 @@ import {
 } from './fault-injection.js';
 
 import {
+  assertEmergencyStopNotActive,
+} from './emergency-stop.js';
+
+import {
   loadApprovedExecutionPlan,
 } from './execution-plan.js';
 
@@ -312,6 +316,8 @@ export async function executeVerifiedPlan(
     );
   }
 
+  await assertEmergencyStopNotActive('risk-reservation');
+
   await reserveTradeOnce(
     riskReservationId,
     plan.payload.exactMint,
@@ -320,6 +326,8 @@ export async function executeVerifiedPlan(
   );
 
   await faultInjector.checkpoint('risk-reserved');
+
+  await assertEmergencyStopNotActive('signing');
 
   await markExecutionSigning(
     journal.executionId
@@ -353,6 +361,8 @@ export async function executeVerifiedPlan(
       bs58.encode(
         signatureBytes
       );
+
+    await assertEmergencyStopNotActive('broadcasting');
 
     const broadcasting =
       await markExecutionBroadcastReady(
@@ -392,6 +402,8 @@ export async function executeVerifiedPlan(
     await auditExecutionBroadcasting(
       broadcasting
     );
+
+    await assertEmergencyStopNotActive('broadcast');
 
     const rpcSignature =
       await rpc.sendExactTransaction(

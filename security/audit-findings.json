@@ -1,0 +1,9 @@
+[
+  {
+    "id": "AUDIT-TEMPLATE",
+    "severity": "info",
+    "status": "resolved",
+    "summary": "Template entry — no actual finding. Replace with real findings from independent security review.",
+    "fixCommit": "initial"
+  }
+]
