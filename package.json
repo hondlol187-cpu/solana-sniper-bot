@@ -46,6 +46,7 @@
     "sniper:plan-execution-retention": "tsx sniper/plan-execution-retention.ts",
     "sniper:archive-execution-evidence": "tsx sniper/archive-execution-evidence.ts",
     "sniper:verify-execution-archives": "tsx sniper/verify-execution-archives.ts",
+    "sniper:devnet-smoke": "tsx sniper/devnet-smoke.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {
