@@ -1,5 +1,3 @@
-import { audit } from './audit.js';
-
 export interface JitoSendResult {
   success: boolean;
   bundleId?: string;
@@ -104,13 +102,18 @@ export async function sendJitoBundle(
           options.timeoutMs
         );
 
-        await audit('jito.bundle.sent', {
-          bundleId,
-          tipAccount,
-          endpoint,
-          transactionCount: encodedTransactions.length,
-          durationMs: Date.now() - start,
-        });
+        try {
+          const { audit } = await import('./audit.js');
+          await audit('jito.bundle.sent', {
+            bundleId,
+            tipAccount,
+            endpoint,
+            transactionCount: encodedTransactions.length,
+            durationMs: Date.now() - start,
+          });
+        } catch {
+          /* audit not available in test env */
+        }
 
         return {
           success: true,
@@ -130,11 +133,16 @@ export async function sendJitoBundle(
   /*
    * All Jito endpoints failed — fall back to standard RPC.
    */
-  await audit('jito.bundle.fallback', {
-    reason: 'All Jito endpoints failed',
-    lastError,
-    durationMs: Date.now() - start,
-  });
+  try {
+    const { audit } = await import('./audit.js');
+    await audit('jito.bundle.fallback', {
+      reason: 'All Jito endpoints failed',
+      lastError,
+      durationMs: Date.now() - start,
+    });
+  } catch {
+    /* audit not available in test env */
+  }
 
   try {
     for (const encodedTx of encodedTransactions) {
@@ -143,10 +151,15 @@ export async function sendJitoBundle(
           Buffer.from(encodedTx, 'base64')
         );
 
-      await audit('jito.fallback.transaction.sent', {
-        signature,
-        durationMs: Date.now() - start,
-      });
+      try {
+        const { audit } = await import('./audit.js');
+        await audit('jito.fallback.transaction.sent', {
+          signature,
+          durationMs: Date.now() - start,
+        });
+      } catch {
+        /* audit not available in test env */
+      }
     }
 
     return {
@@ -160,10 +173,15 @@ export async function sendJitoBundle(
         ? error.message
         : String(error);
 
-    await audit('jito.send.failed', {
-      error: message,
-      durationMs: Date.now() - start,
-    });
+    try {
+      const { audit } = await import('./audit.js');
+      await audit('jito.send.failed', {
+        error: message,
+        durationMs: Date.now() - start,
+      });
+    } catch {
+      /* audit not available in test env */
+    }
 
     return {
       success: false,

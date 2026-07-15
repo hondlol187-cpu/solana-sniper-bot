@@ -599,6 +599,28 @@ export const config = {
     1_000,
     30_000
   ),
+
+  enableJitoBundles: booleanEnv(
+    'ENABLE_JITO_BUNDLES',
+    false
+  ),
+
+  jitoMaxTipLamports: numberEnv(
+    'JITO_MAX_TIP_LAMPORTS',
+    1_000_000,
+    0,
+    10_000_000
+  ),
+
+  jitoFallbackToRpc: booleanEnv(
+    'JITO_FALLBACK_TO_RPC',
+    true
+  ),
+
+  jitoRequiredForMainnet: booleanEnv(
+    'JITO_REQUIRED_FOR_MAINNET',
+    false
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

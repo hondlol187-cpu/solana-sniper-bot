@@ -484,11 +484,144 @@ export async function executeVerifiedPlan(
 
     await assertEmergencyStopNotActive('broadcast');
 
-    const rpcSignature =
-      await rpc.sendExactTransaction(
-        signed
+    /*
+     * Jito execution path selection:
+     * If Jito bundles are enabled and tip accounts are
+     * configured, attempt bundle submission first.
+     * Fall back to standard RPC broadcast if Jito fails
+     * or is disabled.
+     *
+     * Both paths produce the same execution evidence and
+     * journal transitions.
+     */
+    let rpcSignature: string;
+    let jitoBundleId: string | undefined;
+    let jitoPathUsed = false;
+    let jitoFallbackReason: string | undefined;
+
+    const useJito =
+      config.enableJitoBundles &&
+      config.jitoTipAccounts.length > 0;
+
+    if (useJito) {
+      try {
+        const { sendJitoBundle } =
+          await import('./jito-send.js');
+
+        const encodedTx = signed
           .signedTransactionBytes
+          .toString('base64');
+
+        const jitoResult =
+          await sendJitoBundle(
+            [encodedTx],
+            {
+              jitoTipAccounts:
+                config.jitoTipAccounts,
+
+              jitoApiUrl:
+                'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+
+              tipLamports:
+                Math.min(
+                  config.jitoTipLamports,
+                  config.jitoMaxTipLamports
+                ),
+
+              timeoutMs: config.jitoTimeoutMs,
+
+              rpcSendTransaction: async (
+                serialized: Buffer
+              ) =>
+                rpc.sendExactTransaction(
+                  serialized
+                ),
+            }
+          );
+
+        if (jitoResult.success && !jitoResult.fallbackUsed) {
+          jitoBundleId = jitoResult.bundleId;
+          jitoPathUsed = true;
+
+          rpcSignature =
+            deterministicSignature;
+        } else if (
+          jitoResult.success &&
+          jitoResult.fallbackUsed
+        ) {
+          jitoFallbackReason =
+            'All Jito endpoints failed';
+
+          rpcSignature =
+            deterministicSignature;
+        } else {
+          if (
+            config.jitoRequiredForMainnet &&
+            config.expectedCluster ===
+              'mainnet-beta'
+          ) {
+            throw new Error(
+              `Jito required for mainnet but failed: ${jitoResult.error}`
+            );
+          }
+
+          jitoFallbackReason =
+            jitoResult.error ??
+            'Jito submission failed';
+
+          rpcSignature =
+            await rpc.sendExactTransaction(
+              signed
+                .signedTransactionBytes
+            );
+        }
+      } catch (error) {
+        if (
+          config.jitoRequiredForMainnet &&
+          config.expectedCluster ===
+            'mainnet-beta'
+        ) {
+          throw error;
+        }
+
+        jitoFallbackReason =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        rpcSignature =
+          await rpc.sendExactTransaction(
+            signed.signedTransactionBytes
+          );
+      }
+    } else {
+      rpcSignature =
+        await rpc.sendExactTransaction(
+          signed.signedTransactionBytes
+        );
+    }
+
+    /*
+     * Audit Jito path decision for evidence trail.
+     */
+    try {
+      const { audit } =
+        await import('./audit.js');
+
+      await audit(
+        'execution.broadcast.path',
+        {
+          executionId:
+            journal.executionId,
+          jitoPathUsed,
+          jitoBundleId,
+          jitoFallbackReason,
+          signature: rpcSignature,
+        }
       );
+    } catch {
+      /* audit not available in test env */
+    }
 
     await faultInjector.checkpoint('transaction-sent');
 

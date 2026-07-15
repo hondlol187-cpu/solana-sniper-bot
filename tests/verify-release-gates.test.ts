@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const PROJECT_ROOT = join(__dirname, '..');
 
 function runReleaseGates(
   manifestDir?: string
@@ -25,7 +30,7 @@ function runReleaseGates(
   }
 
   const result = spawnSync(args[0], args.slice(1), {
-    cwd: process.cwd(),
+    cwd: PROJECT_ROOT,
     env: { ...process.env },
     encoding: 'utf8',
     timeout: 300_000,
