@@ -572,6 +572,33 @@ export const config = {
         m.trim()
       )
       .filter(Boolean),
+
+  jitoEnabled: booleanEnv(
+    'JITO_ENABLED',
+    false
+  ),
+
+  jitoTipAccounts: (
+    process.env.JITO_TIP_ACCOUNTS ?? ''
+  )
+    .trim()
+    .split(',')
+    .map((a) => a.trim())
+    .filter(Boolean),
+
+  jitoTipLamports: numberEnv(
+    'JITO_TIP_LAMPORTS',
+    100_000,
+    0,
+    1_000_000
+  ),
+
+  jitoTimeoutMs: numberEnv(
+    'JITO_TIMEOUT_MS',
+    10_000,
+    1_000,
+    30_000
+  ),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);
