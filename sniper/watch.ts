@@ -16,6 +16,46 @@ import {
 
 import { audit } from './audit.js';
 
+import {
+  parsePumpfunLaunchEvent,
+  emitPumpfunAuditEvents,
+} from './pumpfun-monitor.js';
+
+import {
+  detectMigrationAndLink,
+} from './pumpfun-migration.js';
+
+import type {
+  PumpfunLaunchSignal,
+} from './pumpfun-types.js';
+
+/**
+ * Handle a Pump.fun launch signal by parsing it,
+ * auditing the event, and tracking the migration.
+ * When a Raydium pool is associated, the candidate
+ * is promoted into the Raydium validation path.
+ */
+async function handlePumpfunSignal(
+  signal: PumpfunLaunchSignal
+): Promise<void> {
+  await emitPumpfunAuditEvents(
+    'pumpfun.signal.detected',
+    {
+      signature: signal.signature,
+      mint: signal.mint,
+      creator: signal.creator,
+      slot: signal.slot,
+    }
+  );
+
+  await detectMigrationAndLink({
+    mint: signal.mint,
+    migrationDetectedAt: signal.detectedAt,
+    previousLifecycleStage: 'pumpfun_detected',
+    bondingCurveComplete: false,
+  });
+}
+
 async function main(): Promise<void> {
   const rpcPool = new RpcPool();
 

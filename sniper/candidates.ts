@@ -61,6 +61,7 @@ async function list(
     console.log(
       [
         candidate.status.toUpperCase(),
+        candidate.source.toUpperCase(),
         candidate.signature,
         candidate.baseMint,
         candidate.poolAddress,
