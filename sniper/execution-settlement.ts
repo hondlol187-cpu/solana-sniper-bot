@@ -47,6 +47,14 @@ import {
   auditExecutionFailed,
 } from './execution-audit.js';
 
+import type {
+  FaultInjector,
+} from './fault-injection.js';
+
+import {
+  noFaults,
+} from './fault-injection.js';
+
 export type SettlementOutcome =
   | 'confirmed'
   | 'failed';
@@ -637,7 +645,8 @@ async function advance(
 
 export async function settleExecutionOutcome(
   input:
-    SettleExecutionInput
+    SettleExecutionInput,
+  faultInjector: FaultInjector = noFaults
 ): Promise<
   ExecutionSettlement
 > {
@@ -695,6 +704,8 @@ export async function settleExecutionOutcome(
         settlement,
         'risk-applied'
       );
+
+    await faultInjector.checkpoint('risk-settled');
   }
 
   if (
@@ -749,6 +760,8 @@ export async function settleExecutionOutcome(
         settlement,
         'execution-applied'
       );
+
+    await faultInjector.checkpoint('execution-terminal');
   }
 
   if (
@@ -816,6 +829,8 @@ export async function settleExecutionOutcome(
         settlement,
         'plan-applied'
       );
+
+    await faultInjector.checkpoint('plan-outcome-recorded');
   }
 
   if (
@@ -851,6 +866,8 @@ export async function settleExecutionOutcome(
         settlement,
         'committed'
       );
+
+    await faultInjector.checkpoint('audit-recorded');
   }
 
   return settlement;

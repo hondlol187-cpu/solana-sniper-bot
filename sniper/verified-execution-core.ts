@@ -16,6 +16,14 @@ import type {
   VerifiedExecutionRpc,
 } from './verified-execution-rpc.js';
 
+import type {
+  FaultInjector,
+} from './fault-injection.js';
+
+import {
+  noFaults,
+} from './fault-injection.js';
+
 import {
   loadApprovedExecutionPlan,
 } from './execution-plan.js';
@@ -67,7 +75,8 @@ export interface VerifiedExecutionResult {
 export async function executeVerifiedPlan(
   planId: string,
   signer: Keypair,
-  rpc: VerifiedExecutionRpc
+  rpc: VerifiedExecutionRpc,
+  faultInjector: FaultInjector = noFaults
 ): Promise<VerifiedExecutionResult> {
   if (!config.liveTrading) {
     throw new Error(
@@ -310,9 +319,13 @@ export async function executeVerifiedPlan(
     currentBalance
   );
 
+  await faultInjector.checkpoint('risk-reserved');
+
   await markExecutionSigning(
     journal.executionId
   );
+
+  await faultInjector.checkpoint('signing-recorded');
 
   let broadcastPrepared =
     false;
@@ -374,6 +387,8 @@ export async function executeVerifiedPlan(
     broadcastPrepared =
       true;
 
+    await faultInjector.checkpoint('broadcast-prepared');
+
     await auditExecutionBroadcasting(
       broadcasting
     );
@@ -383,6 +398,8 @@ export async function executeVerifiedPlan(
         signed
           .signedTransactionBytes
       );
+
+    await faultInjector.checkpoint('transaction-sent');
 
     if (
       rpcSignature !==
@@ -398,6 +415,8 @@ export async function executeVerifiedPlan(
         journal.executionId,
         rpcSignature
       );
+
+    await faultInjector.checkpoint('submitted-recorded');
 
     await auditExecutionSubmitted(
       submitted

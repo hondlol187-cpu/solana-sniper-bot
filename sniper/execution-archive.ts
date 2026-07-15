@@ -35,6 +35,14 @@ import type {
   ExecutionEvidenceBundle,
 } from './execution-evidence.js';
 
+import type {
+  FaultInjector,
+} from './fault-injection.js';
+
+import {
+  noFaults,
+} from './fault-injection.js';
+
 export interface ExecutionArchive {
   version: 1;
 
@@ -271,7 +279,8 @@ export async function loadExecutionArchive(
 }
 
 export async function archiveExecutionEvidence(
-  planId: string
+  planId: string,
+  faultInjector: FaultInjector = noFaults
 ): Promise<
   ExecutionArchive
 > {
@@ -366,6 +375,8 @@ export async function archiveExecutionEvidence(
           existing
         );
 
+        await faultInjector.checkpoint('archive-indexed');
+
         return existing;
       }
 
@@ -437,6 +448,8 @@ export async function archiveExecutionEvidence(
         throw error;
       }
 
+      await faultInjector.checkpoint('archive-written');
+
       const {
         indexExecutionArchive,
       } = await import(
@@ -446,6 +459,8 @@ export async function archiveExecutionEvidence(
       await indexExecutionArchive(
         archive
       );
+
+      await faultInjector.checkpoint('archive-indexed');
 
       return archive;
     }
