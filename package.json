@@ -45,6 +45,7 @@
     "sniper:preview-verified-execution": "tsx sniper/preview-verified-execution.ts",
     "sniper:plan-execution-retention": "tsx sniper/plan-execution-retention.ts",
     "sniper:archive-execution-evidence": "tsx sniper/archive-execution-evidence.ts",
+    "sniper:verify-execution-archives": "tsx sniper/verify-execution-archives.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

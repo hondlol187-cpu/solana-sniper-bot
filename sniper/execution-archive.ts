@@ -8,6 +8,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   writeFile,
@@ -449,4 +450,46 @@ export async function archiveExecutionEvidence(
       return archive;
     }
   );
+}
+
+export async function listExecutionArchiveIds():
+  Promise<string[]> {
+  let entries: string[];
+
+  try {
+    entries =
+      await readdir(
+        directory()
+      );
+  } catch (error) {
+    if (
+      (
+        error as {
+          code?: string;
+        }
+      ).code === 'ENOENT'
+    ) {
+      return [];
+    }
+
+    throw error;
+  }
+
+  return entries
+    .filter(
+      (name) =>
+        name.endsWith(
+          '.json'
+        ) &&
+        name !==
+          'index.json'
+    )
+    .map(
+      (name) =>
+        name.slice(
+          0,
+          -'.json'.length
+        )
+    )
+    .sort();
 }

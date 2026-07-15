@@ -144,6 +144,91 @@ async function main():
     }
   }
 
+  /*
+   * Verify execution archives and their index.
+   */
+  try {
+    const {
+      listExecutionArchiveIds,
+      loadExecutionArchive,
+    } = await import(
+      './execution-archive.js'
+    );
+
+    const {
+      verifyExecutionArchiveIndex,
+    } = await import(
+      './execution-archive-index.js'
+    );
+
+    const archiveVerification =
+      await verifyExecutionArchiveIndex();
+
+    errors.push(
+      ...archiveVerification.errors
+    );
+
+    const archiveIds =
+      await listExecutionArchiveIds();
+
+    const indexByPlanInstance =
+      new Map(
+        archiveVerification.entries.map(
+          (entry) => [
+            entry.planInstanceId,
+            entry,
+          ]
+        )
+      );
+
+    for (
+      const archiveId of
+      archiveIds
+    ) {
+      try {
+        const archive =
+          await loadExecutionArchive(
+            archiveId
+          );
+
+        if (!archive) {
+          errors.push(
+            `Archive ${archiveId} disappeared during readiness check`
+          );
+
+          continue;
+        }
+
+        const indexEntry =
+          indexByPlanInstance.get(
+            archiveId
+          );
+
+        if (!indexEntry) {
+          warnings.push(
+            `Archive ${archiveId} is valid but missing from index`
+          );
+        }
+      } catch (error) {
+        errors.push(
+          `Archive ${archiveId} failed verification: ${
+            error instanceof Error
+              ? error.message
+              : String(error)
+          }`
+        );
+      }
+    }
+  } catch (error) {
+    errors.push(
+      `Archive verification failed: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`
+    );
+  }
+
   const rpcPool =
     new rpcModule.RpcPool();
 
