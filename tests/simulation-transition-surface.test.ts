@@ -81,6 +81,20 @@ test(
         const symbol of
         forbidden
       ) {
+        /*
+         * verify-release-surface.ts legitimately
+         * references these symbols as forbidden
+         * legacy names to scan for. It does not
+         * call them.
+         */
+        if (
+          file.endsWith(
+            'verify-release-surface.ts'
+          )
+        ) {
+          continue;
+        }
+
         assert.equal(
           source.includes(symbol),
           false,

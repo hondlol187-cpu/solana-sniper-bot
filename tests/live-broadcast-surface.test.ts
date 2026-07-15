@@ -66,6 +66,20 @@ test(
           'utf8'
         );
 
+      /*
+       * verify-release-surface.ts scans for
+       * .sendRawTransaction( as a string literal
+       * to detect forbidden call sites. It does
+       * not call the method itself. Skip it.
+       */
+      if (
+        file.endsWith(
+          'verify-release-surface.ts'
+        )
+      ) {
+        continue;
+      }
+
       if (
         source.includes(
           '.sendRawTransaction('
