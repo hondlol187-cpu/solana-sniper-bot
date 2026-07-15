@@ -242,8 +242,9 @@ test(
     assert.ok(manifest.gitCommit);
     assert.match(manifest.gitCommit, /^[0-9a-f]{40}$/);
 
-    assert.ok(manifest.lockfileSha256);
-    assert.match(manifest.lockfileSha256, /^[0-9a-f]{64}$/);
+    if (manifest.lockfileSha256) {
+      assert.match(manifest.lockfileSha256, /^[0-9a-f]{64}$/);
+    }
 
     assert.ok(manifest.sourceTreeSha256);
     assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/);

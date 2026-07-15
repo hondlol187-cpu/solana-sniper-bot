@@ -1,4 +1,17 @@
-import type { HolderAnalysis, HolderEntry } from './token-holders.js';
+export interface HolderEntry {
+  address: string;
+  amount: string;
+  percent: number;
+  isCreator?: boolean;
+}
+
+export interface HolderAnalysis {
+  topHolderPercent: number;
+  top5Percent: number;
+  top10Percent: number;
+  holderCount: number;
+  creatorConcentration?: number;
+}
 
 export interface HolderAnalysisConfig {
   maxTopHolderPercent: number;

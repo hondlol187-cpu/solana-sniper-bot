@@ -82,7 +82,7 @@ test(
         slot: 1,
         programId: 'prog',
         detectedAt: '2025-01-01T00:00:00Z',
-        validated: false,
+        validated: false as const,
       },
     };
 

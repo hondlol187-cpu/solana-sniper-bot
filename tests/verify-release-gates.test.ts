@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -24,18 +24,21 @@ function runReleaseGates(
     args.push(manifestDir);
   }
 
-  const result = execSync(args.join(' '), {
+  const result = spawnSync(args[0], args.slice(1), {
     cwd: process.cwd(),
     env: { ...process.env },
     encoding: 'utf8',
     timeout: 300_000,
   });
 
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+
   return {
-    status: 0,
-    stdout: result,
-    stderr: '',
-    combined: result,
+    status: result.status,
+    stdout,
+    stderr,
+    combined: stdout + '\n' + stderr,
   };
 }
 
@@ -47,49 +50,14 @@ function runReleaseGatesExpectFail(
   stderr: string;
   combined: string;
 } {
-  const args = [
-    'bun',
-    'x',
-    'tsx',
-    'sniper/verify-release-gates.ts',
-  ];
+  const result = runReleaseGates(manifestDir);
 
-  if (manifestDir) {
-    args.push(manifestDir);
-  }
-
-  try {
-    execSync(args.join(' '), {
-      cwd: process.cwd(),
-      env: { ...process.env },
-      encoding: 'utf8',
-      timeout: 300_000,
-    });
-
-    return {
-      status: 0,
-      stdout: '',
-      stderr: '',
-      combined: '',
-    };
-  } catch (error) {
-    const e = error as {
-      status?: number;
-      stdout?: string;
-      stderr?: string;
-    };
-
-    const stdout = e.stdout ?? '';
-    const stderr = e.stderr ?? '';
-
-    return {
-      status: e.status ?? 1,
-      stdout: String(stdout),
-      stderr: String(stderr),
-      combined:
-        String(stdout) + '\n' + String(stderr),
-    };
-  }
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    combined: result.combined,
+  };
 }
 
 test(
@@ -231,6 +199,40 @@ test(
 
     assert.ok(
       durationPattern.test(result.combined)
+    );
+  }
+);
+
+test(
+  'gates include typecheck, lint, and test',
+  async () => {
+    /*
+     * Use runReleaseGatesExpectFail because the consolidated
+     * gate runner may fail (e.g. typecheck) but we only need
+     * to verify the gate names appear in the output.
+     */
+    const result = runReleaseGatesExpectFail();
+
+    assert.ok(
+      result.stdout.length > 0 || result.stderr.length > 0,
+      `gate runner should produce output. stdout=${result.stdout.length}, stderr=${result.stderr.length}`
+    );
+
+    assert.ok(
+      result.combined.includes('typecheck'),
+      `output should mention typecheck gate. First 300 chars: ${result.combined.slice(0, 300)}`
+    );
+
+    assert.ok(
+      result.combined.includes('lint'),
+      'output should mention lint gate'
+    );
+
+    // The test gate name appears in summary lines like "[PASS] test (123ms)"
+    // Use regex to avoid matching "tests" from other output
+    assert.ok(
+      /\[PASS\] test \(\d+ms\)|\[FAIL\] test \(\d+ms\)/.test(result.combined),
+      'output should mention test gate'
     );
   }
 );

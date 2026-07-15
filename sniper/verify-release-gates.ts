@@ -59,6 +59,27 @@ async function main(): Promise<void> {
 
   gates.push(auditFindings);
 
+  const typecheck = runGate(
+    'typecheck',
+    'npx tsc --noEmit 2>&1'
+  );
+
+  gates.push(typecheck);
+
+  const lint = runGate(
+    'lint',
+    'npx eslint . 2>&1'
+  );
+
+  gates.push(lint);
+
+  const test = runGate(
+    'test',
+    'npx tsx --test tests/*.test.ts 2>&1'
+  );
+
+  gates.push(test);
+
   const manifestDir = process.argv[2];
 
   if (manifestDir) {

@@ -1,6 +1,19 @@
-import type { TokenRiskReport } from './token-risk.js';
-
 import type { HolderEntry } from './token-holders.js';
+
+export interface TokenRiskReport {
+  safe: boolean;
+  score: number;
+  hardReject: boolean;
+  reasons: string[];
+  warnings: string[];
+  metrics: {
+    topHolderPercent: number;
+    creatorAllocationPercent?: number;
+    lpLocked: boolean;
+    lpBurned: boolean;
+    knownDeployerRisk: string;
+  };
+}
 
 import {
   analyzeHolderConcentration,
