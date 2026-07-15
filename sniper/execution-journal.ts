@@ -1033,6 +1033,15 @@ export function failStaleSigningExecution(
   );
 }
 
+export function verifyExecutionJournalRecord(
+  journal:
+    ExecutionJournal
+): void {
+  validateJournal(
+    journal
+  );
+}
+
 export async function listExecutionJournals(): Promise<ExecutionJournal[]> {
   let entries: string[];
 

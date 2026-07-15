@@ -531,6 +531,15 @@ export async function persistSimulationArtifact(
   );
 }
 
+export function verifyStoredSimulationArtifactRecord(
+  artifact:
+    StoredSimulationArtifact
+): void {
+  validateArtifact(
+    artifact
+  );
+}
+
 export async function loadSimulationArtifact(
   artifactId: string
 ): Promise<

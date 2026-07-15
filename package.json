@@ -39,6 +39,7 @@
     "sniper:recover-execution-settlements": "tsx sniper/recover-execution-settlements.ts",
     "sniper:execution-history": "tsx sniper/execution-history.ts",
     "sniper:export-execution-evidence": "tsx sniper/export-execution-evidence.ts",
+    "sniper:verify-execution-evidence": "tsx sniper/verify-execution-evidence.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

@@ -8,14 +8,17 @@ import {
 
 import {
   loadSimulationArtifact,
+  verifyStoredSimulationArtifactRecord,
 } from './simulation-artifact-store.js';
 
 import {
   listExecutionJournals,
+  verifyExecutionJournalRecord,
 } from './execution-journal.js';
 
 import {
   listExecutionSettlements,
+  verifyExecutionSettlementRecord,
 } from './execution-settlement.js';
 
 import type {
@@ -322,6 +325,227 @@ export function verifyExecutionEvidenceBundle(
       errors.push(
         `Settlement ${settlement.settlementId} has no journal in bundle`
       );
+    }
+  }
+
+  /*
+   * Deep verification: validate every nested record's
+   * internal hash and cross-reference fields.
+   */
+
+  if (bundle.artifact) {
+    try {
+      verifyStoredSimulationArtifactRecord(
+        bundle.artifact
+      );
+    } catch (error) {
+      errors.push(
+        `Artifact validation failed: ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`
+      );
+    }
+
+    const receipt =
+      bundle.plan.state
+        .simulationReceipt;
+
+    if (!receipt) {
+      errors.push(
+        'Bundle contains artifact but plan has no simulation receipt'
+      );
+    } else {
+      if (
+        receipt.artifactId !==
+        bundle.artifact
+          .artifactId
+      ) {
+        errors.push(
+          'Receipt artifact ID mismatch'
+        );
+      }
+
+      if (
+        receipt.artifactSha256 !==
+        bundle.artifact
+          .artifactSha256
+      ) {
+        errors.push(
+          'Receipt artifact SHA-256 mismatch'
+        );
+      }
+
+      const transactionBytes =
+        Buffer.from(
+          bundle.artifact
+            .serializedTransactionBase64,
+          'base64'
+        );
+
+      const transactionHash =
+        createHash('sha256')
+          .update(
+            transactionBytes
+          )
+          .digest('hex');
+
+      if (
+        transactionHash !==
+        receipt
+          .serializedTransactionSha256
+      ) {
+        errors.push(
+          'Artifact transaction bytes do not match receipt'
+        );
+      }
+    }
+  }
+
+  for (
+    const journal of
+    bundle.journals
+  ) {
+    try {
+      verifyExecutionJournalRecord(
+        journal
+      );
+    } catch (error) {
+      errors.push(
+        `Journal ${journal.executionId} validation failed: ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`
+      );
+    }
+
+    if (
+      journal.artifactId !==
+      bundle.plan.state
+        .simulationReceipt
+        ?.artifactId
+    ) {
+      errors.push(
+        `Journal ${journal.executionId} artifact mismatch`
+      );
+    }
+  }
+
+  const journalByExecutionId =
+    new Map(
+      bundle.journals.map(
+        (journal) => [
+          journal.executionId,
+          journal,
+        ]
+      )
+    );
+
+  for (
+    const settlement of
+    bundle.settlements
+  ) {
+    try {
+      verifyExecutionSettlementRecord(
+        settlement
+      );
+    } catch (error) {
+      errors.push(
+        `Settlement ${settlement.settlementId} validation failed: ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`
+      );
+    }
+
+    const journal =
+      journalByExecutionId.get(
+        settlement.executionId
+      );
+
+    if (!journal) {
+      errors.push(
+        `Settlement ${settlement.settlementId} has no journal`
+      );
+
+      continue;
+    }
+
+    if (
+      settlement.riskReservationId !==
+      journal.riskReservationId
+    ) {
+      errors.push(
+        `Settlement ${settlement.settlementId} risk reservation mismatch`
+      );
+    }
+
+    if (
+      settlement.status ===
+        'committed' &&
+      settlement.outcome ===
+        'confirmed' &&
+      journal.status !==
+        'confirmed'
+    ) {
+      errors.push(
+        `Confirmed settlement ${settlement.settlementId} has non-confirmed journal`
+      );
+    }
+
+    if (
+      settlement.status ===
+        'committed' &&
+      settlement.outcome ===
+        'failed' &&
+      journal.status !==
+        'failed'
+    ) {
+      errors.push(
+        `Failed settlement ${settlement.settlementId} has non-failed journal`
+      );
+    }
+  }
+
+  const executionOutcome =
+    bundle.plan.state
+      .executionOutcome;
+
+  if (executionOutcome) {
+    const settlement =
+      bundle.settlements.find(
+        (item) =>
+          item.settlementId ===
+          executionOutcome
+            .settlementId
+      );
+
+    if (!settlement) {
+      errors.push(
+        'Plan execution outcome has no matching settlement'
+      );
+    } else {
+      if (
+        settlement.outcome !==
+        executionOutcome.outcome
+      ) {
+        errors.push(
+          'Plan outcome does not match settlement outcome'
+        );
+      }
+
+      if (
+        settlement.observedSlot !==
+        executionOutcome
+          .observedSlot
+      ) {
+        errors.push(
+          'Plan outcome slot does not match settlement'
+        );
+      }
     }
   }
 

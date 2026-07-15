@@ -65,7 +65,12 @@ async function writePlan(
   planId: string,
   planInstanceId: string,
   artifactId: string,
-  overrides: { buyLamports?: string; exactMint?: string } = {}
+  overrides: {
+    buyLamports?: string;
+    exactMint?: string;
+    artifactSha256?: string;
+    serializedTransactionSha256?: string;
+  } = {}
 ) {
   const { createHash } = await import('node:crypto');
   const { getApprovedExecutionPlanPath } = await import(
@@ -79,7 +84,8 @@ async function writePlan(
     simulatedAt: new Date().toISOString(),
     simulationReceipt: {
       transactionMessageSha256: MSG_SHA,
-      serializedTransactionSha256: 'c'.repeat(64),
+      serializedTransactionSha256:
+        overrides.serializedTransactionSha256 ?? 'c'.repeat(64),
       recentBlockhash: '11111111111111111111111111111111',
       lastValidBlockHeight: LAST_VALID_BLOCK_HEIGHT,
       simulatedAt: new Date().toISOString(),
@@ -93,7 +99,7 @@ async function writePlan(
       transactionPolicyOk: true,
       transactionPolicySha256: 'f'.repeat(64),
       artifactId,
-      artifactSha256: '1'.repeat(64),
+      artifactSha256: overrides.artifactSha256 ?? '1'.repeat(64),
     },
   };
 
@@ -231,7 +237,17 @@ async function createSubmittedExecution(
   const { reserveTradeOnce } = await import('../sniper/risk.js');
 
   const storedArtifact = await createArtifact(planId, planInstanceId, 'artifact-' + planId);
-  await writePlan(planId, planInstanceId, storedArtifact.artifactId);
+
+  const { createHash } = await import('node:crypto');
+
+  const serializedTransactionSha256 = createHash('sha256')
+    .update(Buffer.from(storedArtifact.serializedTransactionBase64, 'base64'))
+    .digest('hex');
+
+  await writePlan(planId, planInstanceId, storedArtifact.artifactId, {
+    artifactSha256: storedArtifact.artifactSha256,
+    serializedTransactionSha256,
+  });
 
   const journal = await beginExecution(
     planId,

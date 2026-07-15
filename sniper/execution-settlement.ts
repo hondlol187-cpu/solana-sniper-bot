@@ -856,6 +856,15 @@ export async function settleExecutionOutcome(
   return settlement;
 }
 
+export function verifyExecutionSettlementRecord(
+  settlement:
+    ExecutionSettlement
+): void {
+  validate(
+    settlement
+  );
+}
+
 export async function listExecutionSettlements():
   Promise<
     ExecutionSettlement[]
