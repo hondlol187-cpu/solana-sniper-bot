@@ -22,12 +22,27 @@ export type CandidateStatus =
   | 'rejected'
   | 'executed';
 
+export type CandidateSource =
+  | 'raydium'
+  | 'pumpfun';
+
+export type CandidateLifecycleStage =
+  | 'pending'
+  | 'pumpfun_detected'
+  | 'migration_detected'
+  | 'raydium_pool_validated'
+  | 'approved'
+  | 'rejected'
+  | 'executed';
+
 export interface CandidateRecord {
   signature: string;
   poolAddress: string;
   baseMint: string;
 
   status: CandidateStatus;
+  source: CandidateSource;
+  lifecycleStage?: CandidateLifecycleStage;
 
   pool: ValidatedRaydiumPool;
 
@@ -158,6 +173,15 @@ function validateStore(
         'Candidate store contains a malformed record'
       );
     }
+
+    /*
+     * Default source/lifecycleStage for
+     * records created before these fields
+     * existed.
+     */
+    if (!item.source) {
+      item.source = 'raydium';
+    }
   }
 
   return candidate as CandidateStore;
@@ -270,8 +294,14 @@ export async function hasCandidate(
   });
 }
 
+export interface QueueValidatedPoolOptions {
+  source?: CandidateSource;
+  lifecycleStage?: CandidateLifecycleStage;
+}
+
 export async function queueValidatedPool(
-  pool: ValidatedRaydiumPool
+  pool: ValidatedRaydiumPool,
+  options?: QueueValidatedPoolOptions
 ): Promise<CandidateRecord> {
   return serialize(async () => {
     const store =
@@ -301,6 +331,9 @@ export async function queueValidatedPool(
         pool.baseMint,
 
       status: 'pending',
+      source: options?.source ?? 'raydium',
+      lifecycleStage:
+        options?.lifecycleStage ?? 'pending',
 
       pool,
 
@@ -324,6 +357,9 @@ export async function queueValidatedPool(
           record.baseMint,
         liquiditySol:
           pool.liquiditySol,
+        source: record.source,
+        lifecycleStage:
+          record.lifecycleStage,
       }
     );
 

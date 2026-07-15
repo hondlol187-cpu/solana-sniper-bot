@@ -292,6 +292,63 @@ async function main():
     );
   }
 
+  /*
+   * Verify sellability for simulated plans.
+   */
+  try {
+    const {
+      scanApprovedExecutionPlans,
+    } = planModule;
+
+    const {
+      loadSimulationArtifact,
+    } = await import(
+      './simulation-artifact-store.js'
+    );
+
+    for (const planFile of planScan.valid) {
+      const receipt =
+        planFile.state.simulationReceipt;
+
+      if (
+        !receipt?.artifactId ||
+        planFile.state.status !==
+          'simulated'
+      ) {
+        continue;
+      }
+
+      try {
+        const artifact =
+          await loadSimulationArtifact(
+            receipt.artifactId
+          );
+
+        if (
+          artifact.sellabilityReport
+            ?.hardReject
+        ) {
+          errors.push(
+            `Plan ${planFile.planId} has hard-rejected sellability: ${artifact.sellabilityReport.reasons.join('; ')}`
+          );
+        }
+      } catch {
+        /*
+         * Artifact may not be available in
+         * all environments.
+         */
+      }
+    }
+  } catch (error) {
+    warnings.push(
+      `Sellability check failed: ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`
+    );
+  }
+
   const report = {
     ready:
       errors.length === 0,

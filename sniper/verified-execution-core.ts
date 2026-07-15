@@ -218,6 +218,46 @@ export async function executeVerifiedPlan(
     );
   }
 
+  /*
+   * Sellability gate: reject execution if
+   * the artifact has a hard-rejected sellability
+   * report.
+   */
+  try {
+    const {
+      loadSimulationArtifact,
+    } = await import(
+      './simulation-artifact-store.js'
+    );
+
+    const sellArtifact =
+      await loadSimulationArtifact(
+        receipt.artifactId
+      );
+
+    if (
+      sellArtifact.sellabilityReport
+        ?.hardReject
+    ) {
+      throw new Error(
+        `Sellability hard-reject: ${sellArtifact.sellabilityReport.reasons.join('; ')}`
+      );
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes(
+        'Sellability hard-reject'
+      )
+    ) {
+      throw error;
+    }
+    /*
+     * Non-sellability errors (e.g. artifact
+     * not found) fall through to existing checks.
+     */
+  }
+
   if (
     receipt.expectedCluster !==
     config.expectedCluster

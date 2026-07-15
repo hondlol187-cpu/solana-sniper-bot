@@ -56,6 +56,14 @@ export interface StoredSimulationArtifact {
     returnData?:
       SimulationArtifactReturnData;
   };
+
+  sellabilityReport?: {
+    sellable: boolean;
+    hardReject: boolean;
+    effectiveRoundTripLossBps?: number;
+    reasons: string[];
+    warnings: string[];
+  };
 }
 
 export interface PersistSimulationArtifactInput {
