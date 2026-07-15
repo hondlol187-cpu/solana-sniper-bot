@@ -545,6 +545,33 @@ export const config = {
       1,
       1
     ),
+
+  canaryMode:
+    booleanEnv(
+      'CANARY_MODE',
+      false
+    ),
+
+  maxCanaryExecutionsPerDay:
+    numberEnv(
+      'MAX_CANARY_EXECUTIONS_PER_DAY',
+      3,
+      1,
+      10
+    ),
+
+  canaryAllowedMints:
+    (
+      process.env
+        .CANARY_ALLOWED_MINTS ??
+      ''
+    )
+      .trim()
+      .split(',')
+      .map((m) =>
+        m.trim()
+      )
+      .filter(Boolean),
 };
 
 console.log(`Wallet: ${config.walletPublicKey.toBase58()}`);

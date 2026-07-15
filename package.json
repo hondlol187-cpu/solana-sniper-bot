@@ -51,6 +51,7 @@
     "sniper:verify-execution-archives": "tsx sniper/verify-execution-archives.ts",
     "sniper:devnet-smoke": "tsx sniper/devnet-smoke.ts",
     "sniper:emergency-stop": "tsx sniper/emergency-stop-cli.ts",
+    "sniper:recovery-drill": "tsx sniper/recovery-drill.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts"
   },
   "dependencies": {

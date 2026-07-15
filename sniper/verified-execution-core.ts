@@ -151,6 +151,45 @@ export async function executeVerifiedPlan(
     );
   }
 
+  /*
+   * Canary mode: stricter limits.
+   */
+  if (
+    config.canaryMode
+  ) {
+    if (
+      buyLamports >
+      BigInt(
+        config
+          .maxCanaryExecutionLamports
+      )
+    ) {
+      throw new Error(
+        [
+          `Plan buy amount ${buyLamports.toString()} exceeds`,
+          `MAX_CANARY_EXECUTION_LAMPORTS=${config.maxCanaryExecutionLamports}.`,
+        ].join(' ')
+      );
+    }
+
+    if (
+      config
+        .canaryAllowedMints
+        .length > 0 &&
+      !config
+        .canaryAllowedMints
+        .includes(
+          plan
+            .payload
+            .exactMint
+        )
+    ) {
+      throw new Error(
+        `Mint ${plan.payload.exactMint} is not in CANARY_ALLOWED_MINTS`
+      );
+    }
+  }
+
   const receipt =
     plan.state
       .simulationReceipt;

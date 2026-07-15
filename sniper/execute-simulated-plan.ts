@@ -100,13 +100,23 @@ async function main():
   }
 
   const expectedConfirmation =
-    [
-      'CONFIRM',
-      planId,
-      receipt.artifactId,
-      plan.payload.buyLamports,
-      plan.payload.exactMint,
-    ].join(':');
+    configModule
+      .config
+      .canaryMode
+      ? [
+          'CANARY',
+          planId,
+          receipt.artifactId,
+          plan.payload.buyLamports,
+          plan.payload.exactMint,
+        ].join(':')
+      : [
+          'CONFIRM',
+          planId,
+          receipt.artifactId,
+          plan.payload.buyLamports,
+          plan.payload.exactMint,
+        ].join(':');
 
   if (
     confirmation !==
