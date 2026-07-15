@@ -355,6 +355,16 @@ export async function archiveExecutionEvidence(
           );
         }
 
+        const {
+          indexExecutionArchive,
+        } = await import(
+          './execution-archive-index.js'
+        );
+
+        await indexExecutionArchive(
+          existing
+        );
+
         return existing;
       }
 
@@ -425,6 +435,16 @@ export async function archiveExecutionEvidence(
 
         throw error;
       }
+
+      const {
+        indexExecutionArchive,
+      } = await import(
+        './execution-archive-index.js'
+      );
+
+      await indexExecutionArchive(
+        archive
+      );
 
       return archive;
     }
