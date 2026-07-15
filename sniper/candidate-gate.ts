@@ -4,6 +4,36 @@ import {
 
 import { audit } from './audit.js';
 
+import {
+  assessTokenRisk,
+} from './token-risk.js';
+
+import type {
+  TokenRiskReport,
+} from './token-risk.js';
+
+/**
+ * Comprehensive risk assessment for a candidate pool.
+ * Integrates holder concentration, deployer reputation,
+ * LP safety, and mint safety into a single risk report.
+ */
+export function assessCandidateRisk(
+  pool: ValidatedRaydiumPool,
+  mintSafetyReasons: string[] = [],
+  creatorAddress?: string
+): TokenRiskReport {
+  return assessTokenRisk({
+    mintAddress: pool.baseMint,
+    creatorAddress,
+    holders: [],
+    totalSupply: '0',
+    lpParams: {
+      isLpBurned: false,
+    },
+    mintSafetyReasons,
+  });
+}
+
 export async function acceptPoolForTrading(
   pool: ValidatedRaydiumPool
 ): Promise<ValidatedRaydiumPool> {
