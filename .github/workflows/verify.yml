@@ -12,11 +12,13 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -34,3 +36,20 @@ jobs:
 
       - name: Test
         run: bun run test
+
+      - name: Verify release surface
+        run: bun run verify:release-surface
+
+      - name: Verify audit findings
+        run: bun run verify:audit-findings
+
+      - name: Verify consolidated release gates
+        run: bun run verify:release-gates
+
+      - name: Generate release manifest
+        run: |
+          mkdir -p /tmp/release-manifest
+          bun run release:manifest -- --output /tmp/release-manifest/release-manifest.json
+
+      - name: Verify release manifest
+        run: bun run release:verify -- /tmp/release-manifest/release-manifest.json
