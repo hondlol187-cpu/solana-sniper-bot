@@ -4,6 +4,8 @@ import {
   readFile,
 } from 'node:fs/promises';
 
+export type AuditFn = (event: string, details: Record<string, unknown>) => Promise<void>;
+
 import { config } from './config.js';
 import { withFileLock } from './file-lock.js';
 
