@@ -172,7 +172,6 @@ test(
             quoteReserves: '10000000000',
             liquiditySol: 10,
             validated: true,
-            signature: 'test_sig_unsellable',
             detectedAt: new Date().toISOString(),
           } as any,
         },

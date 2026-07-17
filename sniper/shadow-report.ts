@@ -62,7 +62,7 @@ function sanitizeReport(
 
   // Verify no secret fields leaked — check keys on input and output
   const allKeys = new Set<string>();
-  for (const key of Object.keys(result as Record<string, unknown>)) {
+  for (const key of Object.keys(result) as string[]) {
     allKeys.add(key.toLowerCase());
   }
   for (const key of Object.keys(report)) {

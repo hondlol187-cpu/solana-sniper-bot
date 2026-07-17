@@ -73,7 +73,7 @@ export class ShadowRunner {
       : event.signal.signature;
 
     const mint = source === 'raydium'
-      ? (event.signal as Record<string, unknown>).baseMint as string ?? 'unknown'
+      ? ((event.signal as unknown) as Record<string, unknown>).baseMint as string ?? 'unknown'
       : event.signal.mint;
 
     const creator = source === 'raydium'
