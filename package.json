@@ -54,7 +54,12 @@
     "sniper:emergency-stop": "tsx sniper/emergency-stop-cli.ts",
     "sniper:recovery-drill": "tsx sniper/recovery-drill.ts",
     "sniper:risk": "tsx sniper/risk-cli.ts",
-    "sniper:jito-send": "tsx sniper/jito-send.ts"
+    "sniper:jito-send": "tsx sniper/jito-send.ts",
+    "sniper:pipeline-health": "tsx sniper/pipeline-health-cli.ts",
+    "sniper:shadow-soak": "tsx sniper/shadow-soak.ts",
+    "sniper:shadow": "tsx sniper/run-shadow-mode.ts",
+    "sniper:record-events": "tsx sniper/record-chain-events.ts",
+    "sniper:replay-events": "tsx sniper/replay-chain-events.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

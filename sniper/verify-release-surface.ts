@@ -130,6 +130,49 @@ async function main():
     }
   }
 
+  // Shadow-mode files must not import or call signing/broadcast code
+  const shadowFiles = [
+    'sniper/shadow-mode.ts',
+    'sniper/shadow-runner.ts',
+    'sniper/shadow-report.ts',
+    'sniper/run-shadow-mode.ts',
+  ];
+
+  const shadowForbiddenImports = [
+    'key-loader',
+    'jito-send',
+    'verified-transaction',
+  ];
+
+  const shadowForbiddenCalls = [
+    'sendRawTransaction',
+    'sendTransaction',
+    'signTransaction',
+    'signAllTransactions',
+    'sendBundle',
+  ];
+
+  for (const shadowFile of shadowFiles) {
+    try {
+      const shadowSource = await readFile(join(root, shadowFile), 'utf8');
+      const displayPath = shadowFile;
+
+      for (const imp of shadowForbiddenImports) {
+        if (shadowSource.includes(imp)) {
+          errors.push(`Shadow file ${displayPath} references forbidden module: ${imp}`);
+        }
+      }
+
+      for (const call of shadowForbiddenCalls) {
+        if (shadowSource.includes(call)) {
+          errors.push(`Shadow file ${displayPath} references forbidden call: ${call}`);
+        }
+      }
+    } catch {
+      // File may not exist yet
+    }
+  }
+
   if (
     sendCallSites.length !== 1 ||
     sendCallSites[0] !==
